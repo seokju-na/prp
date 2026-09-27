@@ -1,0 +1,37 @@
+[package]
+name = "prp"
+version = "0.1.0"
+license = "MIT"
+authors = ["Seokju Na <seokju.me@gmail.com>"]
+edition = "2024"
+description = "PRP CLI: automate changelogs, versioning, and publishing"
+homepage = "https://github.com/seokju-na/prp"
+repository = "https://github.com/seokju-na/prp"
+keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
+categories = ["development-tools"]
+
+[[bin]]
+name = "prp"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "1"
+clap = { version = "4.6", features = ["derive", "env"] }
+semver = "1"
+toml_edit = "0.25"
+anyhow = "1"
+globset = "0.4"
+walkdir = "2"
+dialoguer = "0.12"
+serde_yaml_ng = "0.10"
+shell-words = "1"
+tempfile = "3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+reqwest = { version = "0.13", features = ["blocking", "json"] }
+enum_dispatch = "0.3"
+httpdate = "1"
+
+[dev-dependencies]
+mockito = "1"

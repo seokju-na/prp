@@ -1,0 +1,35 @@
+[git]
+default_branch = "main"
+release_branches = ["release/fixture"]
+release_tag_format = "{package_name}-v{version}"
+
+[packages]
+# Discover members from all three workspace declarations.
+include = []
+changes_ignore = ["**/*.md"]
+# Tests replace these with a local recorder; this fixture cannot publish for real.
+npm_publish_command = "prp-fixture-publish-disabled npm"
+cargo_publish_command = "prp-fixture-publish-disabled cargo"
+jsr_publish_command = "prp-fixture-publish-disabled jsr"
+
+[packages."packages/bridge"]
+display_name = "Native Bridge"
+artifacts = [{ source = ["build/*.node"], dest = "artifacts/" }]
+assets = ["artifacts/*.node"]
+
+[changelog]
+root = true
+show_registries = true
+
+[github]
+skip_releases = true
+
+# Deliberately local endpoints; integration tests substitute their HTTP server.
+[registries]
+npm_url = "http://127.0.0.1:9/npm"
+cargo_index_url = "http://127.0.0.1:9/cargo"
+jsr_api_url = "http://127.0.0.1:9/jsr"
+
+[http]
+timeout_secs = 1
+retries = 0

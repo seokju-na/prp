@@ -1,0 +1,3 @@
+{
+  "workspace": ["packages/bridge", "deno/utils"]
+}

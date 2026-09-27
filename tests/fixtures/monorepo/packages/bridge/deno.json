@@ -1,0 +1,8 @@
+{
+  "name": "@fixture/bridge",
+  "version": "1.0.0",
+  "exports": "./mod.ts",
+  "imports": {
+    "@fixture/utils": "jsr:@fixture/utils@^1.0.0"
+  }
+}

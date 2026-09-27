@@ -1,0 +1,11 @@
+[workspace]
+members = ["crates/*", "packages/bridge"]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0" # Shared by packages using version.workspace.
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+native_core = { package = "prp-fixture-core", path = "crates/core", version = "^1.0.0" } # Keep this alias and comment.

@@ -4,6 +4,7 @@ version = "0.1.0"
 license = "MIT"
 authors = ["Seokju Na <seokju.me@gmail.com>"]
 edition = "2024"
+rust-version = "1.88.0"
 description = "PRP CLI: automate changelogs, versioning, and publishing"
 homepage = "https://github.com/seokju-na/prp"
 repository = "https://github.com/seokju-na/prp"
@@ -29,7 +30,7 @@ serde_yaml_ng = "0.10"
 shell-words = "1"
 tempfile = "3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-reqwest = { version = "0.13", features = ["blocking", "json"] }
+reqwest = { version = "0.13", features = ["blocking", "json", "query"] }
 enum_dispatch = "0.3"
 httpdate = "1"
 

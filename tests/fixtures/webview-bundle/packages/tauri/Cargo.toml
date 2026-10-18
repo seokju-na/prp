@@ -1,0 +1,8 @@
+[package]
+name = "fixture-wvb-tauri"
+version = "0.3.0"
+edition.workspace = true
+publish = true
+
+[dependencies]
+core_api.workspace = true

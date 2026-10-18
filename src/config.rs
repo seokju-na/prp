@@ -140,6 +140,7 @@ impl Default for PackagesConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct PackageConfig {
   pub display_name: Option<String>,
+  pub release_tag_format: Option<String>,
   pub manifests: Option<Vec<String>>,
   pub before_publish_scripts: Vec<Script>,
   pub artifacts: Vec<Artifact>,
@@ -229,6 +230,12 @@ impl Config {
     relative_path(&config.artifacts.dir)?;
     for (path, pkg) in &config.packages.overrides {
       relative_path(path)?;
+      if let Some(format) = &pkg.release_tag_format {
+        ensure!(
+          format.contains("{version}"),
+          "package release_tag_format must contain {{version}}"
+        );
+      }
       for artifact in &pkg.artifacts {
         for pattern in artifact.source.values() {
           relative_path(pattern)?;
@@ -266,6 +273,7 @@ pub struct HttpConfig {
   pub retry_base_ms: u64,
   pub max_retry_delay_secs: u64,
 }
+
 impl Default for HttpConfig {
   fn default() -> Self {
     Self {
@@ -284,6 +292,7 @@ pub struct RegistryConfig {
   pub cargo_index_url: String,
   pub jsr_api_url: String,
 }
+
 impl Default for RegistryConfig {
   fn default() -> Self {
     Self {

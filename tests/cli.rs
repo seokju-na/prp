@@ -49,10 +49,7 @@ fn prepare_consumes_selected_commit_notes_and_preserves_others() {
 #[test]
 fn workspace_discovery_display_name_and_dependency_changes() {
   let r = Repo::new();
-  r.write(
-    ".prp/config.toml",
-    "[packages.\"packages/app\"]\ndisplay_name = \"Application\"\n",
-  );
+  r.configure("[packages.\"packages/app\"]\ndisplay_name = \"Application\"\n");
   r.write(
     "package.json",
     r#"{"private":true,"workspaces":["packages/*"]}"#,
@@ -149,33 +146,29 @@ fn dry_run_does_not_write_notes_manifests_or_refs() {
 }
 
 #[test]
-fn release_compares_first_parent_and_ignores_new_or_reverted_packages() {
+fn release_includes_initial_and_unchanged_versions_missing_from_registry() {
   let r = Repo::new();
   r.npm("packages/a", "a", "1.0.0", "{}");
   r.commit("initial");
-  assert!(r.cli(&["release", "--dry-run"]).contains("no parent"));
+  assert!(
+    r.cli(&["release", "--dry-run"])
+      .contains("Release a v1.0.0")
+  );
   r.npm("packages/b", "b", "1.0.0", "{}");
   r.commit("add package");
-  assert!(
-    r.cli(&["release", "--dry-run"])
-      .contains("No versions increased")
-  );
-  r.npm("packages/a", "a", "1.0.1", "{}");
-  r.commit("release: a");
+  let out = r.cli(&["release", "--check", "--json"]);
+  let plan: serde_json::Value = serde_json::from_str(&out).unwrap();
+  assert_eq!(plan["packages"].as_array().unwrap().len(), 2);
+  r.write("README.md", "unrelated documentation");
+  r.commit("docs");
   let result = r.cli(&["release", "--dry-run"]);
-  assert!(result.contains("Release a v1.0.1"));
-  assert!(!result.contains("Release b"));
+  assert!(result.contains("Release a v1.0.0"));
+  assert!(result.contains("Release b v1.0.0"));
   assert!(r.git(&["tag"]).is_empty());
-  r.npm("packages/a", "a", "1.0.0", "{}");
-  r.commit("revert release");
-  assert!(
-    r.cli(&["release", "--dry-run"])
-      .contains("No versions increased")
-  );
 }
 
 #[test]
-fn merge_release_compares_first_parent() {
+fn merged_manifest_versions_are_release_candidates() {
   let r = Repo::new();
   r.npm("packages/a", "a", "1.0.0", "{}");
   r.commit("initial");
@@ -195,7 +188,7 @@ fn merge_release_compares_first_parent() {
 #[test]
 fn cargo_workspace_inheritance_aliases_and_comments() {
   let r = Repo::new();
-  r.write(".prp/config.toml", "[packages]\ninclude = []\n");
+  r.configure("[packages]\ninclude = []\n");
   r.write("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n[workspace.package]\nversion = \"0.2.0\" # shared version\n[workspace.dependencies]\nrenamed = { package = \"core-lib\", path = \"crates/core\", version = \"0.1.0\" } # keep this\n");
   r.write(
     "crates/core/Cargo.toml",
@@ -220,13 +213,13 @@ fn cargo_workspace_inheritance_aliases_and_comments() {
   r.commit("release app");
   let output = r.cli(&["release", "--dry-run"]);
   assert!(output.contains("Release app v0.2.1"));
-  assert!(!output.contains("Release core-lib"));
+  assert!(output.contains("Release core-lib v0.2.0"));
 }
 
 #[test]
 fn artifacts_round_trip_with_destination() {
   let r = Repo::new();
-  r.write(".prp/config.toml", "[packages]\ninclude = [\"packages/*\"]\n[packages.\"packages/a\"]\nartifacts = [{ source = [\"build/*.node\"], dest = \"artifacts/\" }]\n");
+  r.configure("[packages]\ninclude = [\"packages/*\"]\n[packages.\"packages/a\"]\nartifacts = [{ source = [\"build/*.node\"], dest = \"artifacts/\" }]\n");
   r.npm("packages/a", "a", "0.1.0", "{}");
   r.write("packages/a/build/a.node", "binary content");
   r.cli(&["artifacts"]);
@@ -258,10 +251,7 @@ fn mocked_publish_orders_dependencies_and_stops_on_failure() {
     r.path().join("publish.sh").display(),
     r.path().join("published.log").display()
   );
-  r.write(
-    ".prp/config.toml",
-    &(config + &registry_api_config(&server)),
-  );
+  r.configure(&(config + &registry_api_config(&server)));
   r.npm("packages/app", "app", "1.0.0", r#"{"core":"^1.0.0"}"#);
   r.npm("packages/core", "core", "1.0.0", "{}");
   r.commit("initial");
@@ -292,10 +282,7 @@ fn unknown_config_dirty_targets_and_version_regressions_are_errors() {
   let dirty = r.raw(&["prepare", "a", "patch", "--allow-dirty", "--skip-commit"]);
   assert!(!dirty.status.success());
   assert!(String::from_utf8_lossy(&dirty.stderr).contains("overwrite local changes"));
-  r.write(
-    ".prp/config.toml",
-    "[packages]\ninculde = [\"packages/*\"]\n",
-  );
+  r.configure("[packages]\ninculde = [\"packages/*\"]\n");
   assert!(!r.raw(&["release", "--dry-run"]).status.success());
 }
 
@@ -332,7 +319,7 @@ fn nested_manifests_get_one_version_and_display_scope() {
 #[test]
 fn pnpm_workspace_exclusions_and_transitive_dependency_candidates() {
   let r = Repo::new();
-  r.write(".prp/config.toml", "[packages]\ninclude = []\n");
+  r.configure("[packages]\ninclude = []\n");
   r.write(
     "pnpm-workspace.yaml",
     "packages:\n  - 'packages/*'\n  - '!packages/ignored'\n",
@@ -380,7 +367,7 @@ fn dev_dependencies_do_not_propagate_and_ignored_changes_stay_out() {
 #[test]
 fn release_rejects_dirty_source_and_dry_run_never_executes_hooks() {
   let r = Repo::new();
-  r.write(".prp/config.toml", "[packages]\ninclude = [\"packages/*\"]\n[packages.\"packages/a\"]\nbefore_publish_scripts = [{ command = \"definitely-not-an-executable\" }]\n");
+  r.configure("[packages]\ninclude = [\"packages/*\"]\n[packages.\"packages/a\"]\nbefore_publish_scripts = [{ command = \"definitely-not-an-executable\" }]\n");
   r.npm("packages/a", "a", "1.0.0", "{}");
   r.commit("initial");
   r.npm("packages/a", "a", "1.0.1", "{}");
@@ -419,10 +406,7 @@ fn all_registries_publish_with_mock_commands_and_tag_after_success() {
       log.display()
     ));
   }
-  r.write(
-    ".prp/config.toml",
-    &(config + &registry_api_config(&server)),
-  );
+  r.configure(&(config + &registry_api_config(&server)));
   r.npm("packages/a", "a", "1.0.0", "{}");
   r.write(
     "packages/a/Cargo.toml",
@@ -468,7 +452,7 @@ fn prerelease_bump_sets_npm_channel_and_release_removes_pre() {
 #[test]
 fn artifacts_can_collect_from_dist_and_target_and_dry_run_is_read_only() {
   let r = Repo::new();
-  r.write(".prp/config.toml", "[packages]\ninclude = [\"packages/*\"]\n[packages.\"packages/a\"]\nartifacts = [{ source = [\"dist/*.js\", \"target/*.node\"] }]\n");
+  r.configure("[packages]\ninclude = [\"packages/*\"]\n[packages.\"packages/a\"]\nartifacts = [{ source = [\"dist/*.js\", \"target/*.node\"] }]\n");
   r.npm("packages/a", "a", "0.1.0", "{}");
   r.write("packages/a/dist/a.js", "javascript");
   r.write("packages/a/target/a.node", "binary");
@@ -500,7 +484,7 @@ fn github_flow_calls_api_with_auth_json_labels_and_binary_asset() {
   let r = Repo::new();
   r.npm("packages/a", "a", "1.0.0", "{}");
   r.write("packages/a/assets/test +#.zip", "binary\0payload");
-  r.write(".prp/config.toml", &format!("[packages]\ninclude = [\"packages/*\"]\n[packages.\"packages/a\"]\nskip_publish = true\nassets = [\"assets/*.zip\"]\n[github]\nowner = \"example\"\nrepo = \"example\"\napi_url = '{}'\nrelease_pr_labels = [\"release\"]\n", server.url()));
+  r.configure(&format!("[packages]\ninclude = [\"packages/*\"]\n[packages.\"packages/a\"]\nskip_publish = true\nassets = [\"assets/*.zip\"]\n[github]\nowner = \"example\"\nrepo = \"example\"\napi_url = '{}'\nrelease_pr_labels = [\"release\"]\n", server.url()));
   let sha = r.commit("initial");
   let notes = format!("### Commits\n\n- initial by Test ({})", &sha[..7]);
   let pr_body = format!("Prepared releases:\n\n## a v1.0.1\n\n{notes}\n\n");
@@ -529,10 +513,14 @@ fn github_flow_calls_api_with_auth_json_labels_and_binary_asset() {
     .with_status(200)
     .with_body("[]")
     .create();
+  let find_release = server
+    .mock("GET", "/repos/example/example/releases/tags/a-v1.0.1")
+    .with_status(404)
+    .create();
   let release = server.mock("POST", "/repos/example/example/releases")
     .match_header("authorization", "Bearer test-token")
     .match_body(Matcher::Json(json!({"tag_name":"a-v1.0.1","name":"a v1.0.1","body":notes,"prerelease":false,"draft":false})))
-    .with_status(201).with_body(json!({"html_url":"https://github.com/example/example/releases/tag/a-v1.0.1", "upload_url":format!("{}/uploads/7/assets{{?name,label}}", server.url())}).to_string()).create();
+    .with_status(201).with_body(json!({"id":7,"html_url":"https://github.com/example/example/releases/tag/a-v1.0.1", "upload_url":format!("{}/uploads/7/assets{{?name,label}}", server.url())}).to_string()).create();
   let upload = server
     .mock("POST", "/uploads/7/assets")
     .match_query(Matcher::UrlEncoded("name".into(), "test +#.zip".into()))
@@ -579,6 +567,7 @@ fn github_flow_calls_api_with_auth_json_labels_and_binary_asset() {
   access.assert();
   pr.assert();
   labels.assert();
+  find_release.assert();
   release.assert();
   upload.assert();
   let remote_tag = Command::new("git")
@@ -597,10 +586,7 @@ fn github_flow_calls_api_with_auth_json_labels_and_binary_asset() {
 #[test]
 fn excluded_nested_package_is_not_absorbed_by_root() {
   let r = Repo::new();
-  r.write(
-    ".prp/config.toml",
-    "[packages]\ninclude = [\".\", \"packages/*\"]\nexclude = [\"packages/ignored\"]\n",
-  );
+  r.configure("[packages]\ninclude = [\".\", \"packages/*\"]\nexclude = [\"packages/ignored\"]\n");
   r.npm(".", "root", "1.0.0", "{}");
   r.npm("packages/ignored", "ignored", "1.0.0", "{}");
   r.commit("initial");
@@ -614,10 +600,9 @@ fn changelog_registry_links_use_next_version_and_respect_visibility() {
   for show in [None, Some(false)] {
     let r = Repo::new();
     if let Some(show) = show {
-      r.write(
-        ".prp/config.toml",
-        &format!("[packages]\ninclude = [\"packages/*\"]\n[changelog]\nshow_registries = {show}\n"),
-      );
+      r.configure(&format!(
+        "[packages]\ninclude = [\"packages/*\"]\n[changelog]\nshow_registries = {show}\n"
+      ));
     }
     r.npm("packages/node", "@scope/node", "1.0.0", "{}");
     r.write(
@@ -657,7 +642,7 @@ fn already_published_manifest_skips_hooks_and_missing_artifacts() {
     .with_body("{}")
     .create();
   let r = Repo::new();
-  r.write(".prp/config.toml", &("[packages]\ninclude = [\"packages/*\"]\nnpm_publish_command = 'must-not-run'\n[packages.\"packages/a\"]\nbefore_publish_scripts = [{command = 'must-not-run'}]\nartifacts = [{source = '*.node'}]\n".to_owned() + &registry_api_config(&server)));
+  r.configure(&("[packages]\ninclude = [\"packages/*\"]\nnpm_publish_command = 'must-not-run'\n[packages.\"packages/a\"]\nbefore_publish_scripts = [{command = 'must-not-run'}]\nartifacts = [{source = '*.node'}]\n".to_owned() + &registry_api_config(&server)));
   r.npm("packages/a", "@scope/a", "1.0.0", "{}");
   r.commit("initial");
   r.npm("packages/a", "@scope/a", "1.0.1", "{}");
@@ -672,12 +657,13 @@ fn already_published_manifest_skips_hooks_and_missing_artifacts() {
 
 #[cfg(unix)]
 #[test]
-fn publish_only_missing_registries_and_retry_lookup_errors() {
+fn registry_lookup_errors_retry_then_stop_before_publication() {
   let mut server = mockito::Server::new();
   let npm = server
     .mock("GET", "/npm/@scope%2Fa/1.0.1")
     .with_status(200)
     .with_body("{}")
+    .expect(0)
     .create();
   let cargo = server
     .mock("GET", "/cargo/na/ti/native-a")
@@ -700,7 +686,7 @@ fn publish_only_missing_registries_and_retry_lookup_errors() {
     ));
   }
   config.push_str(&registry_api_config(&server));
-  r.write(".prp/config.toml", &config);
+  r.configure(&config);
   r.npm("packages/a", "@scope/a", "1.0.0", "{}");
   r.write(
     "packages/a/Cargo.toml",
@@ -714,25 +700,25 @@ fn publish_only_missing_registries_and_retry_lookup_errors() {
   r.cli(&["prepare", "a", "patch", "--skip-commit"]);
   r.commit("release");
   let result = r.raw(&["release", "--skip-push", "--skip-github-release"]);
-  assert!(
-    result.status.success(),
-    "{}",
-    String::from_utf8_lossy(&result.stderr)
-  );
-  assert!(String::from_utf8_lossy(&result.stderr).contains("registry lookup failed"));
-  assert_eq!(r.read("published.log"), "jsr");
+  assert!(!result.status.success());
+  assert!(String::from_utf8_lossy(&result.stderr).contains("cannot determine registry state"));
+  assert!(!r.path().join("published.log").exists());
+  assert!(r.git(&["tag"]).is_empty());
   npm.assert();
   cargo.assert();
   jsr.assert();
 }
 
 #[test]
-fn registry_dry_run_makes_no_http_requests() {
+fn registry_dry_run_queries_without_writes() {
   let mut server = mockito::Server::new();
-  let never = server.mock("GET", mockito::Matcher::Any).expect(0).create();
+  let lookup = server
+    .mock("GET", "/npm/a/1.0.1")
+    .with_status(404)
+    .expect(1)
+    .create();
   let r = Repo::new();
-  r.write(
-    ".prp/config.toml",
+  r.configure(
     &("[packages]\ninclude = ['packages/*']\n".to_owned() + &registry_api_config(&server)),
   );
   r.npm("packages/a", "a", "1.0.0", "{}");
@@ -740,5 +726,7 @@ fn registry_dry_run_makes_no_http_requests() {
   r.npm("packages/a", "a", "1.0.1", "{}");
   r.commit("release");
   r.cli(&["release", "--dry-run"]);
-  never.assert();
+  lookup.assert();
+  assert!(r.git(&["status", "--porcelain"]).is_empty());
+  assert!(r.git(&["tag"]).is_empty());
 }

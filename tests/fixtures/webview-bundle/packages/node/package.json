@@ -1,0 +1,12 @@
+{
+  "name": "@fixture/node",
+  "version": "0.3.0",
+  "files": [
+    "src/index.js"
+  ],
+  "dependencies": {},
+  "optionalDependencies": {
+    "@fixture/node-darwin-arm64": "workspace:^",
+    "@fixture/node-linux-x64-gnu": "workspace:^"
+  }
+}

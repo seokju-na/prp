@@ -1,6 +1,5 @@
 use crate::{
   action::Edits,
-  cli,
   config::ChangelogConfig,
   git::{Commit, Git},
   github::Github,
@@ -14,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use std::{
   collections::BTreeSet,
   fs,
-  io::Write,
   path::{Path, PathBuf},
 };
 
@@ -33,61 +31,6 @@ pub struct Note {
   pub meta: Frontmatter,
   pub body: String,
   pub commit: String,
-}
-
-pub fn create(git: &Git, args: cli::Change) -> Result<()> {
-  use std::io::IsTerminal;
-  let title = match args.title {
-    Some(title) => title,
-    None => {
-      ensure!(
-        std::io::stdin().is_terminal(),
-        "--title is required without an interactive terminal"
-      );
-      dialoguer::Input::<String>::new()
-        .with_prompt("Change title")
-        .interact_text()?
-    }
-  };
-  ensure!(
-    !title.trim().is_empty() && !title.contains(['\n', '\r']),
-    "title must be one non-empty line"
-  );
-  let body = match args.body {
-    Some(body) => body,
-    None if std::io::stdin().is_terminal() => {
-      dialoguer::Editor::new().edit("")?.unwrap_or_default()
-    }
-    None => String::new(),
-  };
-  let commit = args
-    .commit
-    .as_deref()
-    .map(|sha| git.resolve(sha))
-    .transpose()?;
-  let meta = Frontmatter {
-    title,
-    commit,
-    breaking: args.breaking,
-  };
-  let content = format!(
-    "---\n{}---\n\n{}\n",
-    serde_yaml_ng::to_string(&meta)?,
-    body.trim()
-  );
-  let dir = git.root.join(".prp/changes");
-  fs::create_dir_all(&dir)?;
-  let stamp = std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)?
-    .as_nanos();
-  let path = dir.join(format!("{stamp}.md"));
-  let mut file = fs::OpenOptions::new()
-    .write(true)
-    .create_new(true)
-    .open(&path)?;
-  file.write_all(content.as_bytes())?;
-  println!("Created {}", path.strip_prefix(&git.root)?.display());
-  Ok(())
 }
 
 pub fn load(git: &Git) -> Result<Vec<Note>> {

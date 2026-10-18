@@ -1,0 +1,4 @@
+[package]
+name = "template-app-not-for-publication"
+version = "0.0.1"
+edition = "2024"

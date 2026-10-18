@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use reqwest::{
-  Method, Url,
+  Method, StatusCode, Url,
   blocking::{Body, RequestBuilder},
   header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE},
 };
@@ -167,17 +167,59 @@ impl Github {
   ) -> Result<()> {
     #[derive(Deserialize)]
     struct Release {
+      id: u64,
       html_url: String,
       upload_url: String,
     }
-    let request = self.request(Method::POST, &["releases"])?
-      .json(&json!({"tag_name": tag, "name": name, "body": body, "prerelease": prerelease, "draft": false}));
-    let release: Release = self
+    #[derive(Deserialize)]
+    struct Asset {
+      name: String,
+      size: u64,
+      state: String,
+    }
+    let response = self
       .http
-      .send(request)?
-      .json()
-      .context("failed to create GitHub release")?;
-    println!("Created release: {}", release.html_url);
+      .send(self.request(Method::GET, &["releases", "tags", tag])?)?;
+    let existing = response.status != StatusCode::NOT_FOUND;
+    let release: Release = if existing {
+      response.json().context("cannot inspect GitHub release")?
+    } else {
+      let request = self.request(Method::POST, &["releases"])?
+        .json(&json!({"tag_name": tag, "name": name, "body": body, "prerelease": prerelease, "draft": false}));
+      self
+        .http
+        .send(request)?
+        .json()
+        .context("failed to create GitHub release")?
+    };
+    println!(
+      "{} release: {}",
+      if existing {
+        "Using existing"
+      } else {
+        "Created"
+      },
+      release.html_url
+    );
+    let mut uploaded = BTreeMap::new();
+    if existing && !assets.is_empty() {
+      for page in 1.. {
+        let request = self
+          .request(
+            Method::GET,
+            &["releases", &release.id.to_string(), "assets"],
+          )?
+          .query(&[("per_page", 100), ("page", page)]);
+        let batch: Vec<Asset> = self.http.send(request)?.json()?;
+        let done = batch.len() < 100;
+        for asset in batch {
+          uploaded.insert(asset.name.clone(), asset);
+        }
+        if done {
+          break;
+        }
+      }
+    }
     for asset in assets {
       let base = release
         .upload_url
@@ -193,6 +235,14 @@ impl Github {
       url.query_pairs_mut().append_pair("name", filename);
       let file =
         File::open(asset).with_context(|| format!("cannot open asset {}", asset.display()))?;
+      if let Some(previous) = uploaded.get(filename) {
+        ensure!(
+          previous.state == "uploaded" && previous.size == file.metadata()?.len(),
+          "release {tag}: existing asset {filename} is incomplete or has a different size; inspect it before retrying"
+        );
+        println!("Asset {filename} already uploaded; skip");
+        continue;
+      }
       let mut request = self
         .http
         .request(Method::POST, url)

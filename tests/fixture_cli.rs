@@ -8,7 +8,30 @@ use std::{
 use support::Repo;
 
 fn monorepo() -> Repo {
-  let repo = Repo::from_fixture("monorepo");
+  let mut repo = Repo::from_fixture("monorepo");
+  for path in [
+    "/npm/@fixture%2Fcore/1.0.0",
+    "/npm/@fixture%2Fapp/1.0.0",
+    "/npm/@fixture%2Fbridge/1.0.0",
+    "/npm/@fixture%2Fbridge-linux-x64/1.0.0",
+    "/jsr/scopes/fixture/packages/bridge/versions/1.0.0",
+    "/jsr/scopes/fixture/packages/utils/versions/1.0.0",
+  ] {
+    repo
+      .registry
+      .mock("GET", path)
+      .with_status(200)
+      .with_body("{}")
+      .create();
+  }
+  for name in ["core", "consumer", "bridge"] {
+    repo
+      .registry
+      .mock("GET", format!("/cargo/pr/p-/prp-fixture-{name}").as_str())
+      .with_status(200)
+      .with_body("{\"vers\":\"1.0.0\"}\n")
+      .create();
+  }
   repo.commit("initial fixture workspace");
   for package in [
     "@fixture/core",
@@ -244,7 +267,12 @@ fn updates_cargo_workspace_aliases_and_inherited_versions_in_source_manifests() 
       .contains("version.workspace = true")
   );
   repo.commit("release consumer");
-  let output = repo.cli(&["release", "--dry-run"]);
+  let output = repo.cli(&[
+    "release",
+    "--dry-run",
+    "--skip-push",
+    "--skip-github-release",
+  ]);
   assert!(
     output.contains("Release prp-fixture-consumer v1.0.1"),
     "{output}"
@@ -252,9 +280,9 @@ fn updates_cargo_workspace_aliases_and_inherited_versions_in_source_manifests() 
   assert_eq!(
     output
       .lines()
-      .filter(|line| line.starts_with("Release "))
+      .filter(|line| line.starts_with("Release ") && !line.starts_with("Release source:"))
       .count(),
-    1
+    2
   );
 }
 
@@ -297,11 +325,11 @@ fn release_fixture(server: &mockito::ServerGuard) -> Repo {
   ] {
     config["registries"][key] = format!("{}/{suffix}", server.url()).into();
   }
-  repo.write(
-    ".prp/config.toml",
-    &toml::to_string_pretty(&config).unwrap(),
-  );
+  repo.configure(&toml::to_string_pretty(&config).unwrap());
   repo.commit("initial fixture workspace");
+  for package in ["prp-fixture-core", "prp-fixture-consumer", "@fixture/utils"] {
+    repo.git(&["tag", &format!("{package}-v1.0.0")]);
+  }
   repo.write("packages/core/src/index.js", "export const value = 2;\n");
   let feature = repo.commit("update shared API");
   repo.git(&["checkout", "-b", "release/fixture"]);
@@ -374,6 +402,23 @@ fn registry_mocks(server: &mut mockito::ServerGuard, platform_exists: bool) -> V
         .create(),
     );
   }
+  for (path, body) in [
+    ("/cargo/pr/p-/prp-fixture-core", "{\"vers\":\"1.0.0\"}\n"),
+    (
+      "/cargo/pr/p-/prp-fixture-consumer",
+      "{\"vers\":\"1.0.0\"}\n",
+    ),
+    ("/jsr/scopes/fixture/packages/utils/versions/1.0.0", "{}"),
+  ] {
+    mocks.push(
+      server
+        .mock("GET", path)
+        .with_status(200)
+        .with_body(body)
+        .expect(1)
+        .create(),
+    );
+  }
   mocks.push(
     server
       .mock("GET", "/npm/@fixture%2Fbridge-internal/1.0.1")
@@ -420,7 +465,10 @@ fn merged_release_restores_artifacts_publishes_in_order_and_skips_existing_versi
     [
       "@fixture/app-v1.0.1",
       "@fixture/core-v1.0.1",
-      "bridge-v1.0.1"
+      "@fixture/utils-v1.0.0",
+      "bridge-v1.0.1",
+      "prp-fixture-consumer-v1.0.0",
+      "prp-fixture-core-v1.0.0"
     ]
   );
   for tag in [
@@ -454,7 +502,7 @@ fn failed_dependency_publication_stops_before_dependents_hooks_and_tags() {
     "{stderr}"
   );
   assert_eq!(repo.read(".prp/publish.log"), "npm:packages/core\n");
-  assert!(repo.git(&["tag"]).is_empty());
+  assert_eq!(repo.git(&["tag"]).lines().count(), 3);
   for mock in mocks {
     mock.assert();
   }

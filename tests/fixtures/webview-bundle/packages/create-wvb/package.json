@@ -1,0 +1,5 @@
+{
+  "name": "create-fixture-wvb",
+  "version": "0.3.0",
+  "files": ["bin.js"]
+}

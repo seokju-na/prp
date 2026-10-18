@@ -1,7 +1,6 @@
 use crate::{
   action::Edits,
   changelog,
-  cli::Prepare,
   config::{CONFIG_PATH, Config},
   dependency::Graph,
   git::{Commit, Git},
@@ -11,12 +10,51 @@ use crate::{
   version,
 };
 use anyhow::{Context, Result, ensure};
+use clap::Args;
 use semver::Version;
 use std::{
   collections::{BTreeMap, BTreeSet},
   io::IsTerminal,
   path::{Path, PathBuf},
 };
+
+#[derive(Args, Default)]
+pub struct Prepare {
+  /// Package directory or manifest name. Omit to review all candidates interactively.
+  pub package: Option<String>,
+  /// Bump type (patch, minor, major, premajor, preminor, prepatch, prerelease, release) or exact version.
+  #[arg(requires = "package")]
+  pub bump: Option<String>,
+  /// Changelog commit IDs, comma-separated; use "none" for no commit entries.
+  #[arg(long, requires = "package")]
+  pub changes: Option<String>,
+  #[arg(long)]
+  pub from: Option<String>,
+  #[arg(long, default_value = "HEAD")]
+  pub to: String,
+  /// Must resolve to checked-out HEAD; the PR base uses the current branch.
+  #[arg(long = "in")]
+  pub reference: Option<String>,
+  #[arg(long)]
+  pub allow_dirty: bool,
+  /// Write changes locally without committing, pushing, or opening a PR.
+  #[arg(long)]
+  pub skip_commit: bool,
+  /// Create a local release branch without pushing or opening a PR.
+  #[arg(long)]
+  pub skip_pr: bool,
+  /// Persist skip_publish = true in the selected packages' configuration.
+  #[arg(long)]
+  pub skip_publish: bool,
+  #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+  pub draft: bool,
+  #[arg(long)]
+  pub dry_run: bool,
+  #[arg(long, default_value = "rc")]
+  pub preid: String,
+  #[arg(long, env = "GITHUB_TOKEN", hide_env_values = true)]
+  pub github_token: Option<String>,
+}
 
 struct Target {
   index: usize,
@@ -82,7 +120,7 @@ pub fn run(git: &Git, config: &Config, packages: &[Package], args: Prepare) -> R
   for (idx, package) in packages.iter().enumerate() {
     let tag = match &from {
       Some(reference) => Some(reference.clone()),
-      None => git.latest_tag(&config.git.release_tag_format, &package.name, &to)?,
+      None => git.latest_tag(package.tag_format(config), &package.name, &to)?,
     };
     let commits = git.commits(tag.as_deref(), &to)?;
     let ignored = patterns(

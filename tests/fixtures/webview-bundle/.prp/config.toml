@@ -1,0 +1,61 @@
+[git]
+default_branch = "main"
+release_branches = ["release/*"]
+[packages]
+# Explicit roots keep nested npm platform manifests in the node release unit.
+include = ["packages/*", "packages/remote/*"]
+npm_publish_command = "prp-fixture-publish-disabled npm"
+cargo_publish_command = "prp-fixture-publish-disabled cargo"
+jsr_publish_command = "prp-fixture-publish-disabled jsr"
+npm_publish_args = ["--access=public", "--provenance", "--staged"]
+cargo_publish_args = ["--locked"]
+[http]
+retries = 0
+timeout_secs = 2
+[github]
+owner = "fixture"
+repo = "workspace"
+api_url = "http://127.0.0.1:9"
+[registries]
+npm_url = "http://127.0.0.1:9/npm"
+cargo_index_url = "http://127.0.0.1:9/cargo"
+jsr_api_url = "http://127.0.0.1:9/jsr"
+
+[packages."packages/core"]
+release_tag_format = "core/{version}"
+
+[packages."packages/node"]
+release_tag_format = "node/{version}"
+before_publish_scripts = [{ command = "sh", args = ["../../tools/distribute-native.sh"] }]
+artifacts = [{source = "*.node", dest = "artifacts"}]
+assets = ["artifacts/*.node"]
+
+[packages."packages/deno"]
+release_tag_format = "deno/{version}"
+artifacts = [{source = [".output/libfixture-*.dylib", ".output/libfixture-*.so", ".output/*.sha256"]}]
+assets = [".output/*.dylib", ".output/*.so", ".output/*.sha256"]
+
+[packages."packages/ffi"]
+release_tag_format = "ffi/{version}"
+artifacts = [{source = [".output/android.zip", ".output/apple.zip", ".output/WebViewBundleFFI.xcframework.zip"]}]
+assets = [".output/android.zip", ".output/apple.zip", ".output/WebViewBundleFFI.xcframework.zip"]
+
+[packages."packages/tauri"]
+release_tag_format = "tauri/{version}"
+
+[packages."packages/config"]
+release_tag_format = "config/{version}"
+
+[packages."packages/create-wvb"]
+release_tag_format = "create-wvb/{version}"
+# Template manifests describe generated apps, not packages to release.
+manifests = ["package.json"]
+
+[packages."packages/electron"]
+release_tag_format = "electron/{version}"
+
+[packages."packages/remote/base"]
+release_tag_format = "remote-base/{version}"
+
+[packages."packages/remote/local"]
+release_tag_format = "remote-local/{version}"

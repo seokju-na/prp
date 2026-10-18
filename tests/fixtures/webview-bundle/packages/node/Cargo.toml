@@ -1,0 +1,8 @@
+[package]
+name = "fixture-wvb-node"
+version = "0.3.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+core_api.workspace = true

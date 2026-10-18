@@ -158,5 +158,17 @@ pub fn assets(root: &Path, package: &Package, allow_missing: bool) -> Result<Vec
   }
   result.sort();
   result.dedup();
+  let mut names = BTreeMap::new();
+  for path in &result {
+    let name = path.file_name().context("missing asset filename")?;
+    if let Some(previous) = names.insert(name, path) {
+      anyhow::bail!(
+        "{}: GitHub assets must have unique filenames: {} and {}",
+        package.name,
+        previous.display(),
+        path.display()
+      );
+    }
+  }
   Ok(result)
 }

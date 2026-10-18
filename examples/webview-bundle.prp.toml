@@ -1,0 +1,66 @@
+# Migration example for webview-bundle at 35b5cd4896c272f05103799a4bb66211ee104804.
+# Copy to .prp/config.toml and commit it before release.
+# Ignore .prp/artifacts/ and other generated build outputs in .gitignore.
+[git]
+default_branch = "main"
+
+[github]
+owner = "webview-bundle"
+repo = "webview-bundle"
+
+[packages]
+include = ["packages/*", "packages/remote/*"]
+npm_publish_command = "yarn npm publish"
+npm_publish_args = ["--access=public", "--provenance"]
+cargo_publish_command = "cargo publish"
+cargo_publish_args = ["--allow-dirty"]
+jsr_publish_command = "deno publish"
+jsr_publish_args = ["--allow-dirty"]
+
+# Preserve xtask's directory-based tags even for single-manifest packages.
+[packages."packages/bridge"]
+release_tag_format = "bridge/{version}"
+[packages."packages/cli"]
+release_tag_format = "cli/{version}"
+[packages."packages/config"]
+release_tag_format = "config/{version}"
+[packages."packages/core"]
+release_tag_format = "core/{version}"
+[packages."packages/create-webview-bundle"]
+release_tag_format = "create-webview-bundle/{version}"
+[packages."packages/create-wvb"]
+release_tag_format = "create-wvb/{version}"
+# Exclude generated-app templates from release versioning and publishing.
+manifests = ["package.json"]
+[packages."packages/electron"]
+release_tag_format = "electron/{version}"
+[packages."packages/electron-builder"]
+release_tag_format = "electron-builder/{version}"
+[packages."packages/electron-forge"]
+release_tag_format = "electron-forge/{version}"
+[packages."packages/remote/aws"]
+release_tag_format = "aws/{version}"
+[packages."packages/remote/base"]
+release_tag_format = "base/{version}"
+[packages."packages/remote/cloudflare"]
+release_tag_format = "cloudflare/{version}"
+[packages."packages/remote/local"]
+release_tag_format = "local/{version}"
+[packages."packages/tauri"]
+release_tag_format = "tauri/{version}"
+
+[packages."packages/node"]
+release_tag_format = "node/{version}"
+before_publish_scripts = [{ command = "yarn", args = ["artifacts"] }]
+artifacts = [{ source = "*.node", dest = "artifacts" }]
+assets = ["artifacts/*.node"]
+
+[packages."packages/ffi"]
+release_tag_format = "ffi/{version}"
+artifacts = [{ source = [".output/android.zip", ".output/apple.zip", ".output/WebViewBundleFFI.xcframework.zip"] }]
+assets = [".output/android.zip", ".output/apple.zip", ".output/WebViewBundleFFI.xcframework.zip"]
+
+[packages."packages/deno"]
+release_tag_format = "deno/{version}"
+artifacts = [{ source = [".output/libwvb_deno-*.dylib", ".output/libwvb_deno-*.so", ".output/wvb_deno-*.dll", ".output/*.sha256"] }]
+assets = [".output/libwvb_deno-*.dylib", ".output/libwvb_deno-*.so", ".output/wvb_deno-*.dll", ".output/*.sha256"]

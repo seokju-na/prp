@@ -1,0 +1,9 @@
+{
+  "name": "prp-webview-fixture",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "packages/node/npm/*",
+    "packages/remote/*"
+  ]
+}

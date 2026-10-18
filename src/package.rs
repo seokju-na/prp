@@ -36,11 +36,17 @@ impl Package {
     self.id() == input || self.name == input || self.manifests.iter().any(|m| m.name() == input)
   }
   pub fn tag(&self, config: &Config, version: &semver::Version) -> String {
-    config
-      .git
-      .release_tag_format
+    self
+      .tag_format(config)
       .replace("{package_name}", &self.name)
       .replace("{version}", &version.to_string())
+  }
+  pub fn tag_format<'a>(&'a self, config: &'a Config) -> &'a str {
+    self
+      .config
+      .release_tag_format
+      .as_deref()
+      .unwrap_or(&config.git.release_tag_format)
   }
 }
 

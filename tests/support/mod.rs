@@ -5,8 +5,22 @@ use std::{
 };
 use tempfile::TempDir;
 
+pub fn isolate_git(command: &mut Command) -> &mut Command {
+  command
+    .env("GIT_CONFIG_NOSYSTEM", "1")
+    .env("GIT_CONFIG_GLOBAL", "")
+    .env("GIT_CONFIG_COUNT", "0")
+    .env_remove("GIT_DIR")
+    .env_remove("GIT_WORK_TREE")
+    .env_remove("GIT_INDEX_FILE")
+    .env_remove("GIT_OBJECT_DIRECTORY")
+    .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+}
+
 pub struct Repo {
   dir: TempDir,
+  // Every test has a loopback registry by default. No implicit public registry requests.
+  pub registry: mockito::ServerGuard,
 }
 #[allow(dead_code)]
 impl Repo {
@@ -30,22 +44,30 @@ impl Repo {
         fs::copy(entry.path(), destination).unwrap();
       }
     }
+    let mut config: toml::Value = toml::from_str(&repo.read(".prp/config.toml")).unwrap();
+    config.as_table_mut().unwrap().remove("registries");
+    repo.configure(&toml::to_string(&config).unwrap());
     repo
   }
 
   pub fn new() -> Self {
+    let mut registry = mockito::Server::new();
+    registry
+      .mock("GET", mockito::Matcher::Any)
+      .expect(0)
+      .with_status(404)
+      .create();
     let repo = Self {
       dir: tempfile::tempdir().unwrap(),
+      registry,
     };
     repo.git(&["init", "-b", "main"]);
     repo.git(&["config", "user.name", "Test"]);
     repo.git(&["config", "user.email", "test@example.invalid"]);
     repo.git(&["config", "commit.gpgsign", "false"]);
     repo.git(&["config", "tag.gpgsign", "false"]);
-    repo.write(
-      ".prp/config.toml",
-      "[packages]\ninclude = [\"packages/*\", \"crates/*\"]\n",
-    );
+    repo.write(".gitignore", "/.prp/artifacts/\n/published.log\n");
+    repo.configure("[packages]\ninclude = [\"packages/*\", \"crates/*\"]\n");
     repo
   }
   pub fn path(&self) -> &Path {
@@ -59,11 +81,30 @@ impl Repo {
   pub fn read(&self, path: &str) -> String {
     fs::read_to_string(self.path().join(path)).unwrap()
   }
+  pub fn configure(&self, text: &str) {
+    let mut config: toml::Value = toml::from_str(text).unwrap();
+    if config.get("registries").is_none() {
+      config.as_table_mut().unwrap().insert(
+        "registries".into(),
+        toml::Value::Table(toml::map::Map::from_iter(
+          [
+            ("npm_url", "npm"),
+            ("cargo_index_url", "cargo"),
+            ("jsr_api_url", "jsr"),
+          ]
+          .map(|(key, path)| (key.into(), format!("{}/{path}", self.registry.url()).into())),
+        )),
+      );
+    }
+    self.write(
+      ".prp/config.toml",
+      &toml::to_string_pretty(&config).unwrap(),
+    );
+  }
   pub fn git(&self, args: &[&str]) -> String {
-    let result = Command::new("git")
+    let result = isolate_git(&mut Command::new("git"))
       .args(args)
       .current_dir(self.path())
-      .env("GIT_CONFIG_NOSYSTEM", "1")
       .output()
       .unwrap();
     assert!(
@@ -83,7 +124,7 @@ impl Repo {
   }
   pub fn command(&self, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prp"));
-    command
+    isolate_git(&mut command)
       .args(args)
       .current_dir(self.path())
       .env_remove("GITHUB_TOKEN")

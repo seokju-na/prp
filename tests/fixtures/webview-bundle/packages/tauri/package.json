@@ -1,8 +1,4 @@
 {
-  "name": "@fixture/tauri",
-  "version": "0.3.0",
-  "files": [
-    "src/index.js"
-  ],
-  "dependencies": {}
+  "name": "wvb-tauri",
+  "private": true
 }

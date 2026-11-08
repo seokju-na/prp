@@ -1,10 +1,7 @@
 {
-  "name": "@fixture/electron",
-  "version": "0.3.0",
-  "files": [
-    "src/index.js"
-  ],
+  "name": "@wvb/electron",
+  "version": "0.3.1",
   "dependencies": {
-    "@fixture/node": "workspace:^"
+    "@wvb/node": "workspace:^"
   }
 }

@@ -1,1 +1,8 @@
-{"name":"app","version":"0.0.1","private":true}
+{
+  "name": "wvb-tauri-app",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@wvb/cli": "0.3.0"
+  }
+}

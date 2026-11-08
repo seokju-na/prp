@@ -1,299 +1,177 @@
-use crate::{
-  action::Edits,
-  config::ChangelogConfig,
-  git::{Commit, Git},
-  github::Github,
-  manifest::Manifest,
-  package::Package,
-  registry::Registry,
-};
+use crate::action::Action;
+use crate::changes::PackageChanges;
+use crate::config::ResolvedChangelogConfig;
+use crate::edit::Patch;
+use crate::fs_util;
+use crate::git::Commit;
 use anyhow::{Context, Result, ensure};
 use semver::Version;
-use serde::{Deserialize, Serialize};
-use std::{
-  collections::BTreeSet,
-  fs,
-  path::{Path, PathBuf},
-};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Frontmatter {
-  pub title: String,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub commit: Option<String>,
-  #[serde(default)]
-  pub breaking: bool,
-}
+const TITLE: &str = "# Changelog\n";
 
-pub struct Note {
+/// A section going into a changelog file.
+#[derive(Debug)]
+pub struct ChangelogEntry {
   pub path: PathBuf,
-  pub meta: Frontmatter,
-  pub body: String,
-  pub commit: String,
+  pub heading: String,
+  pub section: String,
 }
 
-pub fn load(git: &Git) -> Result<Vec<Note>> {
-  let dir = git.root.join(".prp/changes");
-  if !dir.exists() {
-    return Ok(vec![]);
-  }
-  let mut paths = fs::read_dir(dir)?
-    .map(|e| e.map(|e| e.path()))
-    .collect::<std::io::Result<Vec<_>>>()?;
-  paths.sort();
-  let mut notes = Vec::new();
-  for full in paths {
-    if full.extension().is_none_or(|e| e != "md") || !full.is_file() {
-      continue;
+/// Changelog files being edited, as they were and as they will be.
+#[derive(Default)]
+pub struct ChangelogEdits {
+  files: BTreeMap<PathBuf, (String, String)>,
+}
+
+impl ChangelogEdits {
+  pub fn insert(&mut self, entry: &ChangelogEntry) -> Result<()> {
+    let path = &entry.path;
+    if !self.files.contains_key(path) {
+      let raw = fs_util::read_to_string_optional(path)?.unwrap_or_default();
+      self.files.insert(path.clone(), (raw.clone(), raw));
     }
-    let path = full.strip_prefix(&git.root)?.to_owned();
-    let raw = fs::read_to_string(&full)?.replace("\r\n", "\n");
-    let (front, body) = raw
-      .strip_prefix("---\n")
-      .and_then(|s| s.split_once("\n---\n"))
-      .with_context(|| format!("{} must have YAML frontmatter", path.display()))?;
-    let meta: Frontmatter = serde_yaml_ng::from_str(front)
-      .with_context(|| format!("invalid frontmatter in {}", path.display()))?;
-    ensure!(
-      !meta.title.trim().is_empty() && !meta.title.contains(['\n', '\r']),
-      "invalid title in {}",
-      path.display()
-    );
-    let commit = if let Some(reference) = &meta.commit {
-      git.resolve(reference)?
-    } else {
-      let history = git.run(&[
-        "log",
-        "--diff-filter=A",
-        "--format=%H",
-        "--",
-        path.to_str().context("non-UTF-8 note path")?,
-      ])?;
-      history
-        .lines()
-        .next()
-        .with_context(|| {
-          format!(
-            "{} is uncommitted; commit the note or provide its commit field",
-            path.display()
-          )
-        })?
-        .into()
-    };
-    notes.push(Note {
-      path,
-      meta,
-      body: body.trim().into(),
-      commit,
-    });
+    let (_, updated) = self
+      .files
+      .get_mut(path)
+      .context("Changelog is loaded above")?;
+    *updated = insert_section(updated, &entry.heading, &entry.section)
+      .with_context(|| format!("Failed to update {}", path.display()))?;
+    Ok(())
   }
-  Ok(notes)
+
+  pub fn into_actions(self) -> Result<Vec<Action>> {
+    self
+      .files
+      .into_iter()
+      .map(|(path, (original, updated))| {
+        let patch = Patch::new(&original, &updated)?;
+        Ok(Action::FileWrite { path, patch })
+      })
+      .collect()
+  }
 }
 
-pub fn render(
-  config: &ChangelogConfig,
-  commits: &[Commit],
-  notes: &[Note],
-  dependency_notes: &[String],
-  github: Option<&Github>,
-) -> (String, BTreeSet<PathBuf>) {
-  let mut body = String::new();
-  let mut consumed = BTreeSet::new();
-  for note in notes {
-    if commits.iter().any(|c| c.sha == note.commit) {
-      let prefix = if note.meta.breaking {
-        &config.breaking_prefix
+pub fn package_heading(version: &Version) -> String {
+  format!("## v{version}")
+}
+
+pub fn root_heading(name: &str, version: &Version) -> String {
+  format!("## {name} v{version}")
+}
+
+/// Renders the body of a release: notes, then the list of changes. `extra`
+/// holds entries that have no commit of their own, such as dependency updates.
+pub fn render_section(
+  config: &ResolvedChangelogConfig,
+  changes: &PackageChanges,
+  extra: &[String],
+  registries: Option<&str>,
+) -> String {
+  let mut blocks = vec![];
+  if let Some(registries) = registries {
+    blocks.push(format!("This release includes packages: {registries}"));
+  }
+
+  let notes = changes
+    .notes
+    .iter()
+    .map(|note| {
+      let prefix = if note.breaking {
+        config.breaking_prefix.as_str()
       } else {
         ""
       };
-      body.push_str(&format!(
-        "### {prefix}{}\n\n{}\n\n",
-        note.meta.title, note.body
-      ));
-      consumed.insert(note.path.clone());
-    }
-  }
-  if !dependency_notes.is_empty() {
-    body.push_str("### Dependencies\n\n");
-    for note in dependency_notes {
-      body.push_str(&format!("- {note}\n"));
-    }
-    body.push('\n');
-  }
-  if config.show_commits && !commits.is_empty() {
-    body.push_str("### Commits\n\n");
-    for commit in commits {
-      let pr = if config
-        .commit_templates
-        .iter()
-        .any(|s| s.contains("{github_"))
-      {
-        github.and_then(|gh| gh.commit_pr(&commit.sha).ok().flatten())
-      } else {
-        None
-      };
-      let mut values = vec![
-        ("summary", commit.summary.as_str()),
-        ("body", commit.body.as_str()),
-        ("author_name", commit.author_name.as_str()),
-        ("author_email", commit.author_email.as_str()),
-        ("committer_name", commit.committer_name.as_str()),
-        ("committer_email", commit.committer_email.as_str()),
-        ("sha", &commit.sha[..7]),
-      ];
-      if let Some((author, number)) = &pr {
-        values.push(("github_pr_author_login", author));
-        values.push(("github_pr_number", number));
+      match note.body.is_empty() {
+        true => format!("### {prefix}{}", note.title),
+        false => format!("### {prefix}{}\n\n{}", note.title, note.body),
       }
-      let rendered = config
-        .commit_templates
-        .iter()
-        .find_map(|template| {
-          let mut text = template.clone();
-          for (key, value) in &values {
-            text = text.replace(&format!("{{{key}}}"), value);
-          }
-          if text.contains("{github_") {
-            None
-          } else {
-            Some(text)
-          }
-        })
-        .unwrap_or_else(|| format!("- {} ({})", commit.summary, &commit.sha[..7]));
-      body.push_str(&rendered);
-      body.push('\n');
-    }
-    body.push('\n');
-  }
-  (body.trim_end().to_owned(), consumed)
-}
-
-pub fn append(
-  edits: &mut Edits,
-  config: &ChangelogConfig,
-  package: &Package,
-  next: &Version,
-  body: &str,
-) -> Result<()> {
-  let date = chrono::Utc::now().format("%Y-%m-%d");
-  let local = package.path.join(&config.filename);
-  let root = Path::new(&config.filename);
-  if local != root || !config.root {
-    let heading = format!("## v{next} ({date})");
-    prepend(
-      edits,
-      &local,
-      &heading,
-      body,
-      (next.major > package.version().major).then_some("## "),
-    )?;
-  }
-  if config.root {
-    let prefix = format!("## `{}` ", package.display_name);
-    let heading = format!("{prefix}v{next} ({date})");
-    prepend(
-      edits,
-      root,
-      &heading,
-      body,
-      (next.major > package.version().major).then_some(prefix.as_str()),
-    )?;
-  }
-  Ok(())
-}
-
-fn prepend(
-  edits: &mut Edits,
-  path: &Path,
-  heading: &str,
-  body: &str,
-  remove_prefix: Option<&str>,
-) -> Result<()> {
-  let old = edits.read(path)?.unwrap_or_else(|| "# Changelog\n".into());
-  ensure!(
-    !old.lines().any(|line| line == heading),
-    "changelog entry already exists in {}",
-    path.display()
-  );
-  let mut kept = String::new();
-  let mut removing = false;
-  for line in old.lines() {
-    if line.starts_with("## ") {
-      removing = remove_prefix.is_some_and(|prefix| line.starts_with(prefix));
-    }
-    if !removing {
-      kept.push_str(line);
-      kept.push('\n');
-    }
-  }
-  let position = kept.find("\n## ").map(|n| n + 1).unwrap_or(kept.len());
-  let (preamble, tail) = kept.split_at(position);
-  edits.write(
-    path,
-    format!("{}\n\n{heading}\n\n{body}\n\n{}", preamble.trim_end(), tail)
-      .trim_end()
-      .to_owned()
-      + "\n",
-  );
-  Ok(())
-}
-
-pub fn release_body(root: &Path, config: &ChangelogConfig, package: &Package) -> Result<String> {
-  let local = package.path.join(&config.filename);
-  let raw = fs::read_to_string(root.join(&local))
-    .or_else(|_| fs::read_to_string(root.join(&config.filename)))
-    .unwrap_or_default();
-  let local_prefix = format!("## v{} (", package.version());
-  let root_prefix = format!("## `{}` v{} (", package.display_name, package.version());
-  let mut inside = false;
-  let mut out = String::new();
-  for line in raw.lines() {
-    if line.starts_with("## ") {
-      if inside {
-        break;
-      }
-      inside = line.starts_with(&local_prefix) || line.starts_with(&root_prefix);
-      continue;
-    }
-    if inside {
-      out.push_str(line);
-      out.push('\n');
-    }
-  }
-  Ok(out.trim().into())
-}
-
-pub fn with_registries(
-  config: &ChangelogConfig,
-  package: &Package,
-  version: &Version,
-  body: String,
-) -> String {
-  if !config.show_registries || package.config.skip_publish {
-    return body;
-  }
-  let links = package
-    .manifests
-    .iter()
-    .filter(|m| m.can_publish())
-    .map(|m| {
-      let registry = m.registry();
-      format!(
-        "[`{}` ({})]({})",
-        m.name(),
-        registry.label(),
-        registry.url(m.name(), version)
-      )
     })
     .collect::<Vec<_>>();
-  if links.is_empty() {
-    return body;
+  let has_notes = !notes.is_empty();
+  blocks.extend(notes);
+
+  let mut lines = vec![];
+  if config.show_commits {
+    lines.extend(changes.commits.iter().map(|c| render_commit(config, c)));
   }
-  format!(
-    "This release includes packages: {}\n\n{body}",
-    links.join(", ")
-  )
-  .trim_end()
-  .to_owned()
+  lines.extend(extra.iter().map(|entry| format!("- {entry}")));
+  if !lines.is_empty() {
+    if has_notes {
+      blocks.push("---".to_string());
+    }
+    blocks.push("Changes".to_string());
+    blocks.push(lines.join("\n"));
+  }
+  blocks.join("\n\n")
+}
+
+fn render_commit(config: &ResolvedChangelogConfig, commit: &Commit) -> String {
+  let sha = &commit.sha[..7.min(commit.sha.len())];
+  let values = [
+    ("summary", commit.summary.as_str()),
+    ("body", commit.body.as_str()),
+    ("author_name", commit.author_name.as_str()),
+    ("author_email", commit.author_email.as_str()),
+    ("committer_name", commit.committer_name.as_str()),
+    ("committer_email", commit.committer_email.as_str()),
+    ("sha", sha),
+  ];
+  config
+    .commit_templates
+    .iter()
+    .map(|template| {
+      values.iter().fold(template.clone(), |text, (key, value)| {
+        text.replace(&format!("{{{key}}}"), value)
+      })
+    })
+    // Templates are fallbacks: GitHub metadata may not be available.
+    .find(|text| !text.contains("{github_"))
+    .unwrap_or_else(|| format!("- {} ({sha})", commit.summary))
+}
+
+/// Adds a release section at the top of a changelog, creating one if needed.
+fn insert_section(existing: &str, heading: &str, section: &str) -> Result<String> {
+  let existing = match existing.trim().is_empty() {
+    true => TITLE,
+    false => existing,
+  };
+  ensure!(
+    !existing.lines().any(|line| line.trim_end() == heading),
+    "Changelog already has an entry \"{heading}\""
+  );
+
+  let split = match existing.strip_prefix("# ") {
+    Some(_) => existing.find('\n').map_or(existing.len(), |end| end + 1),
+    None => 0,
+  };
+  let (title, rest) = existing.split_at(split);
+  let mut out = String::new();
+  if !title.is_empty() {
+    out.push_str(title.trim_end());
+    out.push_str("\n\n");
+  }
+  out.push_str(heading);
+  out.push('\n');
+  if !section.is_empty() {
+    out.push('\n');
+    out.push_str(section);
+    out.push('\n');
+  }
+  if !rest.trim().is_empty() {
+    out.push('\n');
+    out.push_str(rest.trim_start());
+  }
+  Ok(out)
+}
+
+/// The body of the section under `heading`.
+pub fn extract_section(changelog: &str, heading: &str) -> Option<String> {
+  let mut lines = changelog.lines();
+  lines.find(|line| line.trim_end() == heading)?;
+  let section = lines
+    .take_while(|line| !line.starts_with("## "))
+    .collect::<Vec<_>>();
+  Some(section.join("\n").trim().to_string())
 }

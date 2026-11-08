@@ -1,6 +1,6 @@
 [package]
-name = "prp"
-version = "0.1.0"
+name = "please-release-please"
+version = "0.0.0"
 license = "MIT"
 authors = ["Seokju Na <seokju.me@gmail.com>"]
 edition = "2024"
@@ -10,12 +10,14 @@ homepage = "https://github.com/seokju-na/prp"
 repository = "https://github.com/seokju-na/prp"
 keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
 categories = ["development-tools"]
+include = ["/src/**/*.rs", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
 
 [[bin]]
 name = "prp"
 path = "src/main.rs"
 
 [dependencies]
+console = "0.16"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = "1"
@@ -31,8 +33,13 @@ shell-words = "1"
 tempfile = "3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.13", features = ["blocking", "json", "query"] }
-enum_dispatch = "0.3"
-httpdate = "1"
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "fs", "process"] }
+diffy = { version = "=0.5.2", features = ["color"] }
+jsonc-parser = { version = "0.34", features = ["serde"] }
+relative-path = "2.0.3"
+ignore = "0.4.34"
+ratatui = "0.30"
 
 [dev-dependencies]
 mockito = "1"
+rstest = "0.28.0"

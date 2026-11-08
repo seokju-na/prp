@@ -1,0 +1,8 @@
+{
+  "name": "@wvb/testing",
+  "version": "0.3.0",
+  "private": true,
+  "dependencies": {
+    "@wvb/node": "workspace:*"
+  }
+}

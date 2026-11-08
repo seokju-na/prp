@@ -1,31 +1,33 @@
-use crate::{changelog::Frontmatter, git::Git};
+use crate::action::ActionRunner;
+use crate::commands::Outcome;
+use crate::workspace::Workspace;
 use anyhow::{Result, ensure};
 use clap::Args;
-use std::{
-  fs,
-  io::{IsTerminal, Write},
-};
+use std::io::IsTerminal;
 
-#[derive(Args)]
-pub struct Change {
+#[derive(Args, Default)]
+pub struct ChangeArgs {
+  /// A detailed title of the change.
   #[arg(long)]
   pub title: Option<String>,
+  /// A longer description of the change.
   #[arg(long)]
   pub body: Option<String>,
-  #[arg(long)]
-  pub commit: Option<String>,
+  /// Comma-separated packages the change belongs to.
+  #[arg(long, value_delimiter = ',')]
+  pub packages: Vec<String>,
   #[arg(long)]
   pub breaking: bool,
+  #[arg(long)]
+  pub dry_run: bool,
 }
 
-pub fn run(git: &Git, args: Change) -> Result<()> {
+pub async fn change(workspace: &Workspace, args: ChangeArgs) -> Result<Outcome> {
+  let interactive = std::io::stdin().is_terminal();
   let title = match args.title {
     Some(title) => title,
     None => {
-      ensure!(
-        std::io::stdin().is_terminal(),
-        "--title is required without an interactive terminal"
-      );
+      ensure!(interactive, "--title is required without a terminal");
       dialoguer::Input::<String>::new()
         .with_prompt("Change title")
         .interact_text()?
@@ -33,41 +35,18 @@ pub fn run(git: &Git, args: Change) -> Result<()> {
   };
   ensure!(
     !title.trim().is_empty() && !title.contains(['\n', '\r']),
-    "title must be one non-empty line"
+    "Title must be one non-empty line"
   );
+
   let body = match args.body {
     Some(body) => body,
-    None if std::io::stdin().is_terminal() => {
-      dialoguer::Editor::new().edit("")?.unwrap_or_default()
-    }
+    None if interactive => dialoguer::Editor::new().edit("")?.unwrap_or_default(),
     None => String::new(),
   };
-  let commit = args
-    .commit
-    .as_deref()
-    .map(|sha| git.resolve(sha))
-    .transpose()?;
-  let meta = Frontmatter {
-    title,
-    commit,
-    breaking: args.breaking,
-  };
-  let content = format!(
-    "---\n{}---\n\n{}\n",
-    serde_yaml_ng::to_string(&meta)?,
-    body.trim()
-  );
-  let dir = git.root.join(".prp/changes");
-  fs::create_dir_all(&dir)?;
-  let stamp = std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)?
-    .as_nanos();
-  let path = dir.join(format!("{stamp}.md"));
-  let mut file = fs::OpenOptions::new()
-    .write(true)
-    .create_new(true)
-    .open(&path)?;
-  file.write_all(content.as_bytes())?;
-  println!("Created {}", path.strip_prefix(&git.root)?.display());
-  Ok(())
+
+  let action = workspace.add_change(title, &body, &args.packages, args.breaking)?;
+  ActionRunner::new(&workspace.root, args.dry_run)
+    .run(&[action])
+    .await?;
+  Ok(Outcome::Done)
 }

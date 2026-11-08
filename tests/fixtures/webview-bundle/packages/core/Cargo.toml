@@ -1,5 +1,8 @@
 [package]
-name = "fixture-wvb"
-version = "0.3.0"
+name        = "wvb"
+version     = "0.3.0"
+authors.workspace = true
 edition.workspace = true
-publish = true
+
+[dependencies]
+serde = { workspace = true }

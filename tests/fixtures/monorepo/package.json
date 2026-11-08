@@ -1,5 +1,0 @@
-{
-  "name": "prp-fixture-monorepo",
-  "private": true,
-  "workspaces": ["packages/*"]
-}

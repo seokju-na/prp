@@ -1,0 +1,30 @@
+{
+  "name": "please-release-please-linux-x64",
+  "version": "0.0.0",
+  "description": "The linux-x64 binary of prp",
+  "license": "MIT",
+  "homepage": "https://github.com/seokju-na/prp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/seokju-na/prp"
+  },
+  "author": {
+    "name": "Seokju Na",
+    "email": "seokju.me@gmail.com"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "preferUnplugged": true,
+  "publishConfig": {
+    "executableFiles": [
+      "bin/prp"
+    ]
+  }
+}

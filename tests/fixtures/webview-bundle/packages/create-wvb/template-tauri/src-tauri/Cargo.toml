@@ -1,4 +1,6 @@
 [package]
-name = "template-app-not-for-publication"
-version = "0.0.1"
-edition = "2024"
+name = "wvb-app"
+version = "0.1.0"
+
+[dependencies]
+wvb-tauri = "0.3.0"

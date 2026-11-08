@@ -1,8 +1,11 @@
 [package]
-name = "fixture-wvb-node"
-version = "0.3.0"
+name        = "wvb-node"
+version     = "0.3.1"
+authors.workspace = true
 edition.workspace = true
-publish = false
+publish     = false
 
 [dependencies]
-core_api.workspace = true
+serde = { workspace = true }
+wvb   = { workspace = true, features = ["full"] }
+napi  = { workspace = true }

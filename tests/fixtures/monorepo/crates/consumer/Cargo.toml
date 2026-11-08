@@ -1,8 +1,0 @@
-[package]
-name = "prp-fixture-consumer"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-native_core.workspace = true

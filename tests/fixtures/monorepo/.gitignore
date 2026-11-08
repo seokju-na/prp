@@ -1,6 +1,0 @@
-/target/
-node_modules/
-/.prp/artifacts/
-/.prp/publish.log
-/packages/bridge/build/
-/packages/bridge/artifacts/

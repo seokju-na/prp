@@ -1,0 +1,196 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: version
+        name: Check that every manifest has the same version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          for manifest in npm/*/package.json; do
+            own=$(jq -r .version "$manifest")
+            if [ "$own" != "$version" ]; then
+              echo "::error file=$manifest::$own does not match $version of Cargo.toml"
+              exit 1
+            fi
+          done
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04, zigbuild: true }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04, zigbuild: true }
+          - { target: aarch64-pc-windows-msvc, os: windows-2025, exe: .exe }
+          - { target: x86_64-pc-windows-msvc, os: windows-2025, exe: .exe }
+    env:
+      # aws-lc-sys uses its prebuilt NASM objects on x86_64 Windows.
+      AWS_LC_SYS_PREBUILT_NASM: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the toolchain
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        if: matrix.zigbuild
+        with:
+          version: 0.17.1
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        if: matrix.zigbuild
+        with:
+          tool: cargo-zigbuild
+      - name: Build
+        shell: bash
+        run: cargo ${{ matrix.zigbuild && 'zigbuild' || 'build' }} --release --locked --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/prp${{ matrix.exe }}
+          if-no-files-found: error
+
+  cargo:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Publish to crates.io
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          if curl -fsS https://index.crates.io/3/p/prp | jq -e --arg version "$VERSION" 'select(.vers == $version)' > /dev/null; then
+            echo "prp@$VERSION is already on crates.io"
+          elif [ "$DRY_RUN" = "true" ]; then
+            cargo publish --locked --dry-run
+          else
+            cargo publish --locked
+          fi
+
+  npm:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: yarn install --immutable
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+      - name: Put the binaries into the npm packages
+        run: |
+          for dir in artifacts/*/; do
+            target=$(basename "$dir")
+            mkdir -p "target/$target/release"
+            cp "$dir"* "target/$target/release/"
+          done
+          node scripts/npm-package.js
+      - name: Publish to npm
+        if: ${{ !inputs.dry-run }}
+        env:
+          PROVENANCE: ${{ !github.event.repository.private && '--provenance' || '' }}
+        run: node scripts/npm-package.js --access public $PROVENANCE
+      - name: Dry run
+        if: ${{ inputs.dry-run }}
+        run: |
+          for dir in npm/*/; do
+            (cd "$dir" && yarn pack --dry-run)
+          done
+
+  github-release:
+    needs: [version, cargo, npm]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+      - name: Archive the binaries
+        run: |
+          mkdir dist
+          for dir in artifacts/*/; do
+            target=$(basename "$dir")
+            if [ -f "$dir/prp.exe" ]; then
+              (cd "$dir" && zip -q "$GITHUB_WORKSPACE/dist/prp-$target.zip" prp.exe)
+            else
+              chmod +x "$dir/prp"
+              tar -czf "dist/prp-$target.tar.gz" -C "$dir" prp
+            fi
+          done
+          (cd dist && sha256sum -- * > SHA256SUMS)
+      - name: Create the GitHub release
+        if: ${{ !inputs.dry-run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            flags=()
+            if [[ "$VERSION" == *-* ]]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "prp $tag" --generate-notes "${flags[@]}"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ inputs.dry-run }}
+        with:
+          name: release-assets
+          path: dist

@@ -1,7 +1,5 @@
-.prp/artifacts/
-.prp/mock/
-**/artifacts/
-**/.output/
-**/*.node
-**/dist/
-/target/
+node_modules
+target
+artifacts
+*.node
+.output

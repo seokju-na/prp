@@ -1,153 +1,287 @@
-use crate::git::Git;
+use crate::edit::{self, Patch};
+use crate::github::{GitHub, PullRequest, Release};
+use crate::manifest::ManifestKind;
+use crate::registry::{Registries, RegistryPublishResult};
 use anyhow::{Context, Result, ensure};
-use std::{
-  collections::BTreeMap,
-  fs,
-  io::Write,
-  path::{Path, PathBuf},
-};
+use console::Style;
+use semver::Version;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-/// In-memory edits only. No release-plan file is written.
-pub struct Edits {
-  pub root: PathBuf,
-  pub files: BTreeMap<PathBuf, Option<String>>,
+/// A mutation. Commands plan these instead of acting, so `--dry-run` can show
+/// them without side effects.
+#[derive(Debug, Clone)]
+pub enum Action {
+  FileWrite {
+    path: PathBuf,
+    patch: Patch,
+  },
+  FileRemove {
+    path: PathBuf,
+  },
+  RunProcess {
+    cmd: String,
+    args: Vec<String>,
+    cwd: PathBuf,
+  },
+  Publish {
+    kind: ManifestKind,
+    name: String,
+    version: Version,
+    dir: PathBuf,
+    args: Vec<String>,
+  },
+  UpsertPullRequest(PullRequest),
+  EnsureRelease(Release),
 }
-impl Edits {
-  pub fn new(root: &Path) -> Self {
+
+impl Action {
+  /// The file this action changes.
+  pub fn file_path(&self) -> Option<&Path> {
+    match self {
+      Self::FileWrite { path, .. } | Self::FileRemove { path } => Some(path),
+      _ => None,
+    }
+  }
+
+  /// One line saying what the action does, with paths relative to `root`.
+  pub fn describe(&self, root: &Path) -> String {
+    let (verb, subject) = self.summary(root);
+    format!("{verb} {subject}")
+  }
+
+  fn summary(&self, root: &Path) -> (&'static str, String) {
+    match self {
+      Self::FileWrite { path, .. } => ("update", relative(root, path)),
+      Self::FileRemove { path } => ("remove", relative(root, path)),
+      Self::RunProcess { cmd, args, .. } => {
+        let words = shell_words::join(std::iter::once(cmd).chain(args));
+        ("run", words)
+      }
+      Self::Publish {
+        name,
+        version,
+        args,
+        ..
+      } => (
+        "publish",
+        format!("{name}@{version} {}", shell_words::join(args)),
+      ),
+      Self::UpsertPullRequest(pr) => (
+        "open pull request",
+        format!("{} -> {}: {}", pr.head, pr.base, pr.title),
+      ),
+      Self::EnsureRelease(release) => ("create GitHub release", release.tag.clone()),
+    }
+  }
+
+  fn verb_style(&self) -> Style {
+    let style = Style::new().bold();
+    match self {
+      Self::FileWrite { .. } => style.yellow(),
+      Self::FileRemove { .. } => style.red(),
+      Self::RunProcess { .. } => style.magenta(),
+      Self::Publish { .. } => style.green(),
+      Self::UpsertPullRequest(_) | Self::EnsureRelease(_) => style.blue(),
+    }
+  }
+
+  pub fn process(cmd: &str, args: &[&str], cwd: &Path) -> Self {
+    Self::RunProcess {
+      cmd: cmd.to_string(),
+      args: args.iter().map(|arg| arg.to_string()).collect(),
+      cwd: cwd.to_path_buf(),
+    }
+  }
+}
+
+pub struct ActionRunner<'a> {
+  root: &'a Path,
+  dry_run: bool,
+  registries: Option<&'a Registries>,
+  github: Option<&'a GitHub>,
+}
+
+impl<'a> ActionRunner<'a> {
+  pub fn new(root: &'a Path, dry_run: bool) -> Self {
     Self {
-      root: root.to_owned(),
-      files: BTreeMap::new(),
+      root,
+      dry_run,
+      registries: None,
+      github: None,
     }
   }
-  pub fn read(&self, path: &Path) -> Result<Option<String>> {
-    if let Some(value) = self.files.get(path) {
-      return Ok(value.clone());
-    }
-    match fs::read_to_string(self.root.join(path)) {
-      Ok(s) => Ok(Some(s)),
-      Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-      Err(e) => Err(e.into()),
-    }
+
+  pub fn with_registries(mut self, registries: &'a Registries) -> Self {
+    self.registries = Some(registries);
+    self
   }
-  pub fn write(&mut self, path: &Path, content: String) {
-    self.files.insert(path.to_owned(), Some(content));
+
+  /// Only needed outside dry runs, which never reach GitHub.
+  pub fn with_github(mut self, github: Option<&'a GitHub>) -> Self {
+    self.github = github;
+    self
   }
-  pub fn remove(&mut self, path: &Path) {
-    self.files.insert(path.to_owned(), None);
-  }
-  pub fn show(&self) {
-    for (path, content) in &self.files {
-      println!(
-        "{} {}",
-        if content.is_some() { "write" } else { "remove" },
-        path.display()
-      );
-    }
-  }
-  pub fn check_clean_targets(&self, git: &Git) -> Result<()> {
-    for path in self.files.keys() {
-      let current = fs::read_to_string(self.root.join(path)).ok();
-      let committed = git.read_at("HEAD", path)?;
-      ensure!(
-        current == committed,
-        "release would overwrite local changes in {}; commit or restore that file first",
-        path.display()
-      );
+
+  /// Runs `actions` in order, stopping at the first failure.
+  pub async fn run(&self, actions: &[Action]) -> Result<()> {
+    for action in actions {
+      self.show(action);
+      if !self.dry_run {
+        self.apply(action).await?;
+      }
     }
     Ok(())
   }
-  pub fn apply(&self) -> Result<()> {
-    let mut originals = BTreeMap::new();
-    for path in self.files.keys() {
-      let full = self.root.join(path);
-      let old = match fs::read(&full) {
-        Ok(bytes) => Some(bytes),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e.into()),
-      };
-      originals.insert(path.clone(), old);
+
+  fn show(&self, action: &Action) {
+    print!("{}", self.render(action, console::colors_enabled()));
+  }
+
+  /// What `show` prints for `action`, in color when `colors`.
+  fn render(&self, action: &Action, colors: bool) -> String {
+    let paint = |style: Style, text: &str| style.force_styling(colors).apply_to(text).to_string();
+    let prefix = match self.dry_run {
+      true => paint(Style::new().dim(), "[dry-run] "),
+      false => String::new(),
+    };
+    let (verb, subject) = action.summary(self.root);
+    let mut out = format!("{prefix}{} {subject}\n", paint(action.verb_style(), verb));
+    match action {
+      Action::FileWrite { patch, .. } if self.dry_run => out.push_str(&patch.render(colors)),
+      Action::UpsertPullRequest(pr) if self.dry_run => {
+        out.push_str(&paint(Style::new().dim(), &pr.body));
+        out.push('\n');
+      }
+      Action::EnsureRelease(release) => {
+        for asset in &release.assets {
+          let verb = paint(action.verb_style(), "upload");
+          out.push_str(&format!("{prefix}{verb} {}\n", relative(self.root, asset)));
+        }
+      }
+      _ => {}
     }
-    for (path, content) in &self.files {
-      if let Err(error) = replace(&self.root.join(path), content.as_deref().map(str::as_bytes)) {
-        for (path, original) in originals {
-          if let Err(restore) = replace(&self.root.join(&path), original.as_deref()) {
-            eprintln!("cannot restore {}: {restore:#}", path.display());
+    out
+  }
+
+  async fn apply(&self, action: &Action) -> Result<()> {
+    match action {
+      Action::FileWrite { path, patch } => apply_patch(path, patch),
+      Action::FileRemove { path } => {
+        fs::remove_file(path).with_context(|| format!("Failed to remove {}", path.display()))
+      }
+      Action::RunProcess { cmd, args, cwd } => run_process(cmd, args, cwd),
+      Action::Publish {
+        kind,
+        name,
+        version,
+        dir,
+        args,
+      } => {
+        let registries = self.registries.context("Registries are not configured")?;
+        match registries.publish(*kind, dir, args).await? {
+          RegistryPublishResult::Success => Ok(()),
+          RegistryPublishResult::Duplicated => {
+            println!("{name}@{version} is already published");
+            Ok(())
+          }
+          RegistryPublishResult::Error { status, message } => {
+            anyhow::bail!(
+              "Failed to publish {name}@{version} ({status}): {}",
+              message.trim()
+            )
           }
         }
-        return Err(error);
+      }
+      Action::UpsertPullRequest(pr) => {
+        let url = self.github()?.upsert_pull_request(pr).await?;
+        println!("Pull request: {url}");
+        Ok(())
+      }
+      Action::EnsureRelease(release) => {
+        let url = self.github()?.ensure_release(release).await?;
+        println!("GitHub release: {url}");
+        Ok(())
       }
     }
-    Ok(())
   }
-  /// Build a commit through a temporary index, preserving the user's index and checkout.
-  pub fn commit(&self, git: &Git, branch: &str, title: &str) -> Result<String> {
-    git.run(&["check-ref-format", "--branch", branch])?;
-    ensure!(
-      git.branch()? != branch,
-      "release branch must differ from the current branch"
-    );
-    let head = git.resolve("HEAD")?;
-    let reference = format!("refs/heads/{branch}");
-    ensure!(
-      git.run(&["show-ref", "--verify", &reference]).is_err(),
-      "release branch '{branch}' already exists; inspect it before preparing another release"
-    );
-    let temp = tempfile::tempdir()?;
-    let index = temp.path().join("index");
-    let index_str = index.to_str().context("non-UTF-8 temporary path")?;
-    let env = [("GIT_INDEX_FILE", index_str)];
-    git.input(&["read-tree", &head], "", &env)?;
-    for (path, content) in &self.files {
-      let path = path.to_str().context("non-UTF-8 file path")?;
-      if let Some(content) = content {
-        let blob = git.input(&["hash-object", "-w", "--stdin"], content, &[])?;
-        let existing = git.run(&["ls-tree", &head, "--", path])?;
-        let mode = existing.split_whitespace().next().unwrap_or("100644");
-        ensure!(
-          matches!(mode, "100644" | "100755"),
-          "cannot edit non-regular file {path}"
-        );
-        git.input(
-          &[
-            "update-index",
-            "--add",
-            "--cacheinfo",
-            mode,
-            blob.trim(),
-            path,
-          ],
-          "",
-          &env,
-        )?;
-      } else {
-        git.input(&["update-index", "--force-remove", "--", path], "", &env)?;
-      }
-    }
-    let tree = git.input(&["write-tree"], "", &env)?;
-    let commit = git.input(
-      &["commit-tree", tree.trim(), "-p", &head],
-      &format!("{title}\n"),
-      &[],
-    )?;
-    git.run(&["update-ref", &reference, commit.trim(), ""])?;
-    Ok(commit.trim().into())
+
+  fn github(&self) -> Result<&GitHub> {
+    self.github.context("GitHub is not configured")
   }
 }
 
-fn replace(path: &Path, content: Option<&[u8]>) -> Result<()> {
-  if let Some(content) = content {
-    let parent = path.parent().context("missing parent directory")?;
-    fs::create_dir_all(parent)?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    temp.write_all(content)?;
-    if let Ok(metadata) = fs::metadata(path) {
-      temp.as_file().set_permissions(metadata.permissions())?;
-    }
-    temp
-      .persist(path)
-      .with_context(|| format!("cannot write {}", path.display()))?;
-  } else if path.exists() {
-    fs::remove_file(path)?;
+fn relative(root: &Path, path: &Path) -> String {
+  path
+    .strip_prefix(root)
+    .unwrap_or(path)
+    .display()
+    .to_string()
+}
+
+fn apply_patch(path: &Path, patch: &Patch) -> Result<()> {
+  let original = match fs::read_to_string(path) {
+    Ok(raw) => raw,
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+    Err(error) => return Err(error).with_context(|| format!("Failed to read {}", path.display())),
+  };
+  let updated = edit::apply_patch(&original, patch)
+    .with_context(|| format!("Failed to update {}", path.display()))?;
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
   }
+  fs::write(path, updated).with_context(|| format!("Failed to write {}", path.display()))
+}
+
+fn run_process(cmd: &str, args: &[String], cwd: &Path) -> Result<()> {
+  let output = Command::new(cmd)
+    .args(args)
+    .current_dir(cwd)
+    .output()
+    .with_context(|| format!("Failed to execute {cmd}"))?;
+  ensure!(
+    output.status.success(),
+    "{cmd} failed ({}): {}",
+    output.status,
+    String::from_utf8_lossy(&output.stderr).trim()
+  );
+  print!("{}", String::from_utf8_lossy(&output.stdout));
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn update() -> Action {
+    Action::FileWrite {
+      path: PathBuf::from("/repo/package.json"),
+      patch: Patch::new("\"1.0.0\"\n", "\"1.1.0\"\n").unwrap(),
+    }
+  }
+
+  #[test]
+  fn a_dry_run_shows_the_action_and_its_diff() {
+    let runner = ActionRunner::new(Path::new("/repo"), true);
+    let plain = runner.render(&update(), false);
+    assert!(
+      plain.starts_with("[dry-run] update package.json\n"),
+      "{plain}"
+    );
+    assert!(plain.contains("-\"1.0.0\"\n+\"1.1.0\""), "{plain}");
+    assert!(!plain.contains('\x1b'), "{plain}");
+  }
+
+  #[test]
+  fn colors_mark_the_verb_and_the_diff() {
+    let runner = ActionRunner::new(Path::new("/repo"), true);
+    let colored = runner.render(&update(), true);
+    assert!(
+      colored.contains("\x1b[33m\x1b[1mupdate\x1b[0m"),
+      "{colored:?}"
+    );
+    assert!(colored.contains("\x1b[32m+\"1.1.0\""), "{colored:?}");
+    assert!(colored.contains("\x1b[31m-\"1.0.0\""), "{colored:?}");
+  }
 }

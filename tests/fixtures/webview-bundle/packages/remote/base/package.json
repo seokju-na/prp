@@ -1,10 +1,7 @@
 {
-  "name": "@fixture/remote",
+  "name": "@wvb/remote-base",
   "version": "0.3.0",
-  "files": [
-    "src/index.js"
-  ],
-  "dependencies": {
-    "@fixture/config": "workspace:^"
+  "peerDependencies": {
+    "@wvb/config": "workspace:*"
   }
 }

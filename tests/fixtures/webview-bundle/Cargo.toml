@@ -1,8 +1,23 @@
 [workspace]
-resolver = "3"
-members = ["packages/core", "packages/node", "packages/deno", "packages/ffi", "packages/tauri"]
+members  = ["packages/core", "packages/tauri", "packages/node", "packages/ffi", "packages/deno"]
+resolver = "2"
+
 [workspace.package]
-edition = "2024"
+authors    = ["Seokju Na <seokju.me@gmail.com>"]
+edition    = "2024"
+license    = "MIT"
+repository = "https://github.com/webview-bundle/webview-bundle"
+
 [workspace.dependencies]
-# Test a renamed inherited dependency as used in native bindings.
-core_api = { package = "fixture-wvb", path = "packages/core", version = "0.3.0" }
+anyhow    = "1"
+napi      = "=3.5.2" # Pinned along with napi-derive.
+serde     = "1.0"
+tokio     = "1.47.1"
+wvb       = { version = "0.3.0", path = "./packages/core" }
+wvb-deno  = { version = "0.3.0", path = "./packages/deno" }
+wvb-ffi   = { version = "0.3.0", path = "./packages/ffi" }
+wvb-node  = { version = "0.3.1", path = "./packages/node" }
+wvb-tauri = { version = "0.3.0", path = "./packages/tauri" }
+
+[profile.release]
+strip = "none" # Keep symbols for crash reports.

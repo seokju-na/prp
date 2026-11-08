@@ -1,0 +1,25 @@
+{
+  "name": "please-release-please-win32-arm64",
+  "version": "0.0.0",
+  "description": "The win32-arm64 binary of prp",
+  "license": "MIT",
+  "homepage": "https://github.com/seokju-na/prp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/seokju-na/prp"
+  },
+  "author": {
+    "name": "Seokju Na",
+    "email": "seokju.me@gmail.com"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "preferUnplugged": true
+}

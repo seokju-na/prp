@@ -1,8 +1,7 @@
 {
-  "name": "@fixture/config",
+  "name": "@wvb/config",
   "version": "0.3.0",
-  "files": [
-    "src/index.js"
-  ],
-  "dependencies": {}
+  "peerDependencies": {
+    "@wvb/node": "workspace:^"
+  }
 }

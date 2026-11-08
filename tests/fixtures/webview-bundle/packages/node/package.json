@@ -1,12 +1,10 @@
 {
-  "name": "@fixture/node",
-  "version": "0.3.0",
-  "files": [
-    "src/index.js"
-  ],
-  "dependencies": {},
+  "name": "@wvb/node",
+  "version": "0.3.1",
+  "main": "index.js",
   "optionalDependencies": {
-    "@fixture/node-darwin-arm64": "workspace:^",
-    "@fixture/node-linux-x64-gnu": "workspace:^"
+    "@wvb/node-darwin-arm64": "workspace:^",
+    "@wvb/node-linux-x64-gnu": "workspace:^",
+    "@wvb/node-win32-x64-msvc": "workspace:^"
   }
 }

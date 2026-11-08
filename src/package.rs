@@ -1,307 +1,356 @@
-use crate::registry::Registry;
-use crate::{
-  config::{Config, PackageConfig, relative_path},
-  manifest::{MANIFESTS, Manifest, Manifests, json},
+use crate::changelog::{self, ChangelogEntry};
+use crate::config::{
+  ResolvedChangelogConfig, ResolvedGitConfig, ResolvedPackageConfig, ResolvedPackagesConfig,
 };
-use anyhow::{Context, Result, ensure};
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use std::{
-  collections::{BTreeMap, BTreeSet},
-  fs,
-  path::{Path, PathBuf},
-};
-use walkdir::WalkDir;
+use crate::fs_util;
+use crate::manifest::{Manifest, ManifestKind};
+use crate::plan::{PackagePlan, Plan};
+use crate::registry::Registries;
+use anyhow::{Context, Result, anyhow, ensure};
+use relative_path::{RelativePath, RelativePathBuf};
+use semver::Version;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
+
+type ManifestGroup = BTreeMap<PathBuf, ManifestGroupData>;
 
 #[derive(Clone, Debug)]
+struct ManifestGroupData {
+  package_path: RelativePathBuf,
+  /// Listed in `manifests`, so it must be usable. Discovered files
+  /// without a version are skipped instead.
+  from_config: bool,
+}
+
+/// Two packages are the same when they are at the same path.
+#[derive(Clone, Debug)]
 pub struct Package {
-  pub path: PathBuf,
-  pub name: String,
-  pub display_name: String,
-  pub manifests: Vec<Manifests>,
-  pub config: PackageConfig,
+  path: PathBuf,
+  relative_path: RelativePathBuf,
+  name: String,
+  manifests: Vec<Manifest>,
+  config: ResolvedPackageConfig,
+}
+
+impl PartialEq for Package {
+  fn eq(&self, other: &Self) -> bool {
+    self.relative_path == other.relative_path
+  }
+}
+
+impl Eq for Package {}
+
+impl PartialOrd for Package {
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    Some(self.cmp(other))
+  }
+}
+
+impl Ord for Package {
+  fn cmp(&self, other: &Self) -> Ordering {
+    self.relative_path.cmp(&other.relative_path)
+  }
 }
 
 impl Package {
-  pub fn version(&self) -> &semver::Version {
-    self.manifests[0].version()
+  pub fn path(&self) -> &Path {
+    &self.path
   }
+
+  pub fn relative_path(&self) -> &RelativePath {
+    &self.relative_path
+  }
+
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
+  pub fn manifests(&self) -> &[Manifest] {
+    &self.manifests
+  }
+
+  /// The manifests a release publishes.
+  pub fn publishable_manifests(&self) -> impl Iterator<Item = &Manifest> {
+    self
+      .manifests
+      .iter()
+      .filter(|manifest| self.publishes(manifest))
+  }
+
+  /// Whether a release publishes `manifest`: it is public, and so is the package.
+  pub fn publishes(&self, manifest: &Manifest) -> bool {
+    !self.config.skip_publish && manifest.can_publish()
+  }
+
+  pub fn config(&self) -> &ResolvedPackageConfig {
+    &self.config
+  }
+
+  /// The identifier used in config-like files: the path, with `.` for the root.
   pub fn id(&self) -> String {
-    if self.path.as_os_str().is_empty() {
-      ".".into()
-    } else {
-      self.path.to_string_lossy().replace('\\', "/")
+    match self.relative_path.as_str() {
+      "" => ".".to_string(),
+      path => path.to_string(),
     }
   }
+
   pub fn matches(&self, input: &str) -> bool {
-    self.id() == input || self.name == input || self.manifests.iter().any(|m| m.name() == input)
+    self.id() == input
+      || self.name == input
+      || self
+        .manifests
+        .iter()
+        .any(|manifest| manifest.name() == input)
   }
-  pub fn tag(&self, config: &Config, version: &semver::Version) -> String {
-    self
-      .tag_format(config)
-      .replace("{package_name}", &self.name)
-      .replace("{version}", &version.to_string())
+
+  /// The version of the package's top-level manifest.
+  pub fn version(&self) -> &Version {
+    self.manifests[0].version()
   }
-  pub fn tag_format<'a>(&'a self, config: &'a Config) -> &'a str {
+
+  pub fn tag(&self, config: &ResolvedGitConfig, version: &Version) -> String {
     self
       .config
       .release_tag_format
-      .as_deref()
-      .unwrap_or(&config.git.release_tag_format)
-  }
-}
-
-pub fn patterns(patterns: &[String]) -> Result<GlobSet> {
-  let mut builder = GlobSetBuilder::new();
-  for p in patterns {
-    builder.add(
-      GlobBuilder::new(p.strip_prefix("./").unwrap_or(p))
-        .literal_separator(true)
-        .build()
-        .with_context(|| format!("invalid glob {p}"))?,
-    );
-  }
-  Ok(builder.build()?)
-}
-
-pub fn files(root: &Path) -> Result<Vec<PathBuf>> {
-  if !root.exists() {
-    return Ok(vec![]);
-  }
-  let mut found = Vec::new();
-  for entry in WalkDir::new(root)
-    .follow_links(false)
-    .into_iter()
-    .filter_entry(|e| {
-      e.depth() == 0
-        || !matches!(
-          e.file_name().to_str(),
-          Some(".git" | "node_modules" | "target" | "dist" | ".prp")
-        )
-    })
-  {
-    let entry = entry?;
-    if entry.file_type().is_file() {
-      found.push(entry.path().strip_prefix(root)?.to_owned());
-    }
-  }
-  found.sort();
-  Ok(found)
-}
-
-pub fn load(root: &Path, config: &Config) -> Result<Vec<Package>> {
-  let all = files(root)?;
-  let manifests: Vec<_> = all
-    .into_iter()
-    .filter(|p| {
-      p.file_name()
-        .and_then(|s| s.to_str())
-        .is_some_and(|n| MANIFESTS.contains(&n))
-    })
-    .collect();
-  let mut include = config.packages.include.clone();
-  let mut exclude = config.packages.exclude.clone();
-  if include.is_empty() {
-    discover_workspaces(root, &mut include, &mut exclude)?;
-  }
-  if include.is_empty() {
-    include = vec!["packages/*".into(), "crates/*".into(), ".".into()];
-  }
-  for pattern in &include {
-    relative_path(pattern)?;
-  }
-  let includes = patterns(&include)?;
-  let excludes = patterns(&exclude)?;
-  let mut roots = BTreeSet::new();
-  for manifest in &manifests {
-    let dir = manifest.parent().unwrap_or(Path::new(""));
-    let id = if dir.as_os_str().is_empty() {
-      Path::new(".")
-    } else {
-      dir
-    };
-    if (includes.is_match(id)
-      || config
-        .packages
-        .overrides
-        .contains_key(&id.to_string_lossy().to_string()))
-      && !excludes.is_match(id)
-    {
-      roots.insert(dir.to_owned());
-    }
-  }
-  for explicit in config.packages.overrides.keys() {
-    let p = if explicit == "." {
-      PathBuf::new()
-    } else {
-      PathBuf::from(explicit)
-    };
-    ensure!(
-      excludes.is_match(explicit) || roots.contains(&p),
-      "configured package '{explicit}' has no supported manifest"
-    );
-  }
-  let read = |path: &Path| -> Result<Option<String>> {
-    match fs::read_to_string(root.join(path)) {
-      Ok(s) => Ok(Some(s)),
-      Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-      Err(e) => Err(e.into()),
-    }
-  };
-  let mut packages = Vec::new();
-  let mut owners = BTreeMap::new();
-  for dir in &roots {
-    let id = if dir.as_os_str().is_empty() {
-      ".".into()
-    } else {
-      dir.to_string_lossy().to_string()
-    };
-    let settings = config
-      .packages
-      .overrides
-      .get(&id)
-      .cloned()
-      .unwrap_or_default();
-    let explicit_patterns = settings
-      .manifests
       .as_ref()
-      .map(|p| patterns(p))
-      .transpose()?;
-    let mut owned = Vec::new();
-    for file in &manifests {
-      if file.ancestors().skip(1).any(|p| excludes.is_match(p)) {
-        continue;
-      }
-      let Ok(relative) = file.strip_prefix(dir) else {
-        continue;
-      };
-      let nearest = roots
-        .iter()
-        .filter(|p| file.starts_with(p))
-        .max_by_key(|p| p.components().count());
-      if nearest != Some(dir) {
-        continue;
-      }
-      if explicit_patterns
-        .as_ref()
-        .is_some_and(|p| !p.is_match(relative))
-      {
-        continue;
-      }
-      if let Some(manifest) = Manifests::read(file, &read)? {
-        if let Some(previous) = owners.insert(
-          (manifest.registry(), manifest.name().to_owned()),
-          file.clone(),
-        ) {
-          anyhow::bail!(
-            "duplicate {} package {} in {} and {}",
-            manifest.registry().label(),
-            manifest.name(),
-            previous.display(),
-            file.display()
-          );
-        }
-        owned.push(manifest);
-      }
-    }
-    if owned.is_empty() {
-      ensure!(
-        !config.packages.overrides.contains_key(&id),
-        "configured package '{id}' has no versioned manifests"
-      );
-      continue;
-    }
-    owned.sort_by_key(|m| (m.path().components().count(), m.path().to_owned()));
-    let name = if owned.len() == 1 {
-      owned[0].name().to_owned()
-    } else {
-      dir
-        .file_name()
-        .or_else(|| root.file_name())
-        .context("cannot determine package name")?
-        .to_string_lossy()
-        .to_string()
-    };
-    let display_name = settings
-      .display_name
-      .clone()
-      .unwrap_or_else(|| name.clone());
-    packages.push(Package {
-      path: dir.clone(),
-      name,
-      display_name,
-      manifests: owned,
-      config: settings,
-    });
+      .unwrap_or(&config.release_tag_format)
+      .replace("{package_name}", &self.name)
+      .replace("{version}", &version.to_string())
   }
-  let mut names = BTreeSet::new();
-  for pkg in &packages {
-    ensure!(
-      names.insert(&pkg.name),
-      "duplicate logical package name {}; use distinct directory names",
-      pkg.name
-    );
-  }
-  ensure!(
-    !packages.is_empty(),
-    "no versioned packages found; configure [packages].include"
-  );
-  Ok(packages)
-}
 
-fn discover_workspaces(
-  root: &Path,
-  include: &mut Vec<String>,
-  exclude: &mut Vec<String>,
-) -> Result<()> {
-  if root.join("package.json").exists() {
-    let doc = json(&fs::read_to_string(root.join("package.json"))?, false)?;
-    let values = doc["workspaces"]
-      .as_array()
-      .or_else(|| doc["workspaces"]["packages"].as_array());
-    if let Some(values) = values {
-      include.extend(values.iter().filter_map(|v| v.as_str().map(str::to_owned)));
-    }
+  /// What `plan` adds to the changelogs for this package.
+  pub fn changelog_entries(
+    &self,
+    root: &Path,
+    plan: &Plan,
+    config: &ResolvedChangelogConfig,
+    registries: &Registries,
+  ) -> Vec<ChangelogEntry> {
+    let Some(section) = self.changelog_section(plan, config, registries) else {
+      return vec![];
+    };
+    let Some(planned) = plan.get(self) else {
+      return vec![];
+    };
+    let [own, shared] = self.changelog_locations(root, config, planned.next_version());
+    let shared = (config.root && shared.0 != own.0).then_some(shared);
+    [Some(own), shared]
+      .into_iter()
+      .flatten()
+      .map(|(path, heading)| ChangelogEntry {
+        path,
+        heading,
+        section: section.clone(),
+      })
+      .collect()
   }
-  if root.join("pnpm-workspace.yaml").exists() {
-    let doc: serde_yaml_ng::Value =
-      serde_yaml_ng::from_str(&fs::read_to_string(root.join("pnpm-workspace.yaml"))?)?;
-    if let Some(values) = doc["packages"].as_sequence() {
-      for value in values {
-        if let Some(pattern) = value.as_str() {
-          if let Some(p) = pattern.strip_prefix('!') {
-            exclude.push(p.into());
-          } else {
-            include.push(pattern.into());
+
+  /// The body of this package's changelog section, if `plan` releases it.
+  pub fn changelog_section(
+    &self,
+    plan: &Plan,
+    config: &ResolvedChangelogConfig,
+    registries: &Registries,
+  ) -> Option<String> {
+    let planned = plan.get(self)?;
+    let links = config
+      .show_registries
+      .then(|| self.registry_links(planned, registries))
+      .flatten();
+    Some(changelog::render_section(
+      config,
+      &planned.changes,
+      &plan.dependency_updates(planned),
+      links.as_deref(),
+    ))
+  }
+
+  /// The notes of the current version, for its GitHub release.
+  pub fn release_notes(&self, root: &Path, config: &ResolvedChangelogConfig) -> Result<String> {
+    for (path, heading) in self.changelog_locations(root, config, self.version()) {
+      let raw = fs_util::read_to_string_optional(&path)?.unwrap_or_default();
+      if let Some(notes) = changelog::extract_section(&raw, &heading) {
+        return Ok(notes);
+      }
+    }
+    anyhow::bail!(
+      "Missing release notes for {} v{}",
+      self.name,
+      self.version()
+    )
+  }
+
+  /// Where a version is recorded: the package's changelog, then the root one.
+  fn changelog_locations(
+    &self,
+    root: &Path,
+    config: &ResolvedChangelogConfig,
+    version: &Version,
+  ) -> [(PathBuf, String); 2] {
+    [
+      (
+        self.path.join(&config.filename),
+        changelog::package_heading(version),
+      ),
+      (
+        root.join(&config.root_filename),
+        changelog::root_heading(&self.name, version),
+      ),
+    ]
+  }
+
+  fn registry_links(&self, planned: &PackagePlan, registries: &Registries) -> Option<String> {
+    let links = planned
+      .manifests
+      .iter()
+      .filter(|(manifest, _)| self.publishes(manifest))
+      .map(|(manifest, version)| {
+        let url = registries.url(manifest.kind(), manifest.name(), version);
+        format!("[`{}`]({url})", manifest.name())
+      })
+      .collect::<Vec<_>>();
+    (!links.is_empty()).then(|| links.join(", "))
+  }
+
+  pub fn load_all(root: &Path, config: &ResolvedPackagesConfig) -> Result<Vec<Package>> {
+    let mut group: BTreeMap<RelativePathBuf, Vec<Manifest>> = BTreeMap::new();
+
+    for (file_path, group_data) in Self::group_manifests(root, config)? {
+      let data =
+        std::fs::read(&file_path).map_err(|e| anyhow!("Failed to read manifest file: {}", e))?;
+
+      match Manifest::parse(&file_path, data)? {
+        Some(manifest_file) => group
+          .entry(group_data.package_path)
+          .or_default()
+          .push(manifest_file),
+        None => ensure!(
+          !group_data.from_config,
+          "Manifest {} of package \"{}\" has no \"version\" field",
+          file_path.display(),
+          group_data.package_path,
+        ),
+      }
+    }
+
+    for key in config.overrides.keys() {
+      ensure!(
+        group.contains_key(&RelativePath::new(key).normalize()),
+        "Configured package \"{key}\" has no usable manifest"
+      );
+    }
+
+    let mut packages = vec![];
+
+    for (relative_path, mut manifests) in group {
+      // Top-level manifests of the package come first.
+      manifests.sort_by_key(|m| (m.path().components().count(), m.path().to_owned()));
+
+      let package_config = config
+        .overrides
+        .iter()
+        .find(|(key, _)| RelativePath::new(key).normalize() == relative_path)
+        .map(|(_, config)| config.clone())
+        .unwrap_or_default();
+      let name = Self::determine_name(&relative_path, &package_config);
+      let package = Self {
+        path: relative_path.to_path(root),
+        relative_path,
+        name,
+        manifests,
+        config: package_config,
+      };
+      packages.push(package);
+    }
+
+    Ok(packages)
+  }
+
+  fn group_manifests(root: &Path, config: &ResolvedPackagesConfig) -> Result<ManifestGroup> {
+    let files = fs_util::find_files_recursively(
+      root,
+      &ManifestKind::file_names(),
+      Some(&config.includes),
+      Some(&config.excludes),
+    )?;
+
+    // Configured files win over discovered ones: `npm/*/package.json` of
+    // `packages/node` must not stay a package of its own.
+    let mut configured_group = Self::discover_configured_group(root, config)?;
+    let configured = configured_group
+      .values()
+      .map(|owner| owner.package_path.clone())
+      .collect::<HashSet<_>>();
+
+    for file in files {
+      let relative = file
+        .strip_prefix(root)
+        .with_context(|| format!("Failed to resolve path: {}", file.display()))?;
+      let relative_dir = relative.parent().unwrap_or(Path::new(""));
+      let relative_dir = RelativePathBuf::from_path(relative_dir)
+        .with_context(|| format!("Failed to resolve path: {}", file.display()))?;
+      if !configured.contains(&relative_dir) {
+        configured_group.entry(file).or_insert(ManifestGroupData {
+          package_path: relative_dir,
+          from_config: false,
+        });
+      }
+    }
+
+    Ok(configured_group)
+  }
+
+  fn discover_configured_group(
+    root: &Path,
+    config: &ResolvedPackagesConfig,
+  ) -> Result<ManifestGroup> {
+    let mut group = ManifestGroup::new();
+
+    for (key, pkg_config) in &config.overrides {
+      let relative_path = RelativePath::new(key).normalize();
+      let package_dir = relative_path.to_path(root);
+
+      for pattern in &pkg_config.manifests {
+        let found = fs_util::find_files_recursively(
+          &package_dir,
+          &ManifestKind::file_names(),
+          Some(&vec![pattern.clone()]),
+          None,
+        )?;
+        ensure!(
+          !found.is_empty(),
+          "Manifest pattern \"{pattern}\" of package \"{key}\" matches no file"
+        );
+
+        for file in found {
+          let owner = ManifestGroupData {
+            package_path: relative_path.clone(),
+            from_config: true,
+          };
+          if let Some(previous) = group.insert(file.clone(), owner) {
+            ensure!(
+              previous.package_path == relative_path,
+              "Manifest {} is duplicated in packages \"{}\" and \"{relative_path}\"",
+              file.display(),
+              previous.package_path,
+            );
           }
         }
       }
     }
+    Ok(group)
   }
-  if root.join("Cargo.toml").exists() {
-    let doc = json(&fs::read_to_string(root.join("Cargo.toml"))?, true)?;
-    if let Some(members) = doc["workspace"]["members"].as_array() {
-      include.extend(members.iter().filter_map(|v| v.as_str().map(str::to_owned)));
+
+  fn determine_name(relative_path: &RelativePathBuf, config: &ResolvedPackageConfig) -> String {
+    if let Some(name) = &config.name {
+      return name.to_owned();
     }
-    if let Some(excluded) = doc["workspace"]["exclude"].as_array() {
-      exclude.extend(
-        excluded
-          .iter()
-          .filter_map(|v| v.as_str().map(str::to_owned)),
-      );
-    }
-    if doc["package"]["version"].is_string() {
-      include.push(".".into());
+
+    let name = relative_path.to_string();
+    match name.is_empty() {
+      true => "root".to_string(),
+      false => name,
     }
   }
-  if root.join("deno.json").exists() {
-    let doc = json(&fs::read_to_string(root.join("deno.json"))?, false)?;
-    if let Some(members) = doc["workspace"].as_array() {
-      include.extend(
-        members
-          .iter()
-          .filter_map(|v| v.as_str().map(|s| s.trim_start_matches("./").to_owned())),
-      );
-    }
-  }
-  Ok(())
 }

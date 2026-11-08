@@ -1,475 +1,279 @@
-use crate::{
-  artifacts, changelog,
-  config::Config,
-  dependency::Graph,
-  git::Git,
-  github::Github,
-  http_util::HttpClient,
-  manifest::{Manifest, Manifests},
-  package::Package,
-  registry::{self, Registry},
-};
-use anyhow::{Context, Result, ensure};
+use crate::action::{Action, ActionRunner};
+use crate::commands::Outcome;
+use crate::fs_util;
+use crate::git::Git;
+use crate::github::{GitHub, Release};
+use crate::manifest::{Manifest, ManifestKind};
+use crate::npm;
+use crate::package::Package;
+use crate::registry::Registries;
+use crate::release_record::ReleaseRecord;
+use crate::workspace::Workspace;
+use anyhow::{Context, Result, anyhow, ensure};
 use clap::Args;
-use serde::Serialize;
-use std::{
-  collections::{BTreeMap, BTreeSet},
-  fs,
-};
+use semver::Version;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use tokio::task::JoinSet;
 
-#[derive(Args)]
-pub struct Release {
-  /// Query registries and tags without running hooks, restoring artifacts, or publishing.
+#[derive(Args, Default)]
+pub struct ReleaseArgs {
+  /// The release to run. Defaults to the newest one matching the working directory.
+  pub id: Option<String>,
+  /// Publish npm packages under this dist-tag instead of the default one.
   #[arg(long)]
-  pub check: bool,
-  /// Print the check result as JSON for any CI system.
-  #[arg(long, requires = "check")]
-  pub json: bool,
-  /// Require this exact commit before checking or publishing (for a split build/release pipeline).
-  #[arg(long)]
-  pub expected_head: Option<String>,
-  /// Query registries and show remaining operations without writing or executing commands.
+  pub dist_tag: Option<String>,
+  /// Show what would happen without changing anything or querying registries.
   #[arg(long)]
   pub dry_run: bool,
-  #[arg(long)]
-  pub skip_github_release: bool,
-  /// Keep tags local (also requires --skip-github-release).
-  #[arg(long, requires = "skip_github_release")]
-  pub skip_push: bool,
-  #[arg(long)]
-  pub allow_missing_artifacts: bool,
   #[arg(long, env = "GITHUB_TOKEN", hide_env_values = true)]
   pub github_token: Option<String>,
 }
 
-#[derive(Serialize)]
-struct PublishManifest {
-  path: String,
-  registry: &'static str,
-  name: String,
-  version: String,
-  published: bool,
+type PublishKey = (ManifestKind, String, Version);
+
+fn publish_key(manifest: &Manifest) -> PublishKey {
+  (
+    manifest.kind(),
+    manifest.name().to_string(),
+    manifest.version().clone(),
+  )
 }
 
-#[derive(Serialize)]
-struct Target {
-  #[serde(skip)]
-  index: usize,
-  package: String,
-  path: String,
-  version: String,
-  tag: String,
-  create_tag: bool,
-  push_tag: bool,
-  github_release: bool,
-  manifests: Vec<PublishManifest>,
-  #[serde(skip)]
-  pending: BTreeSet<usize>,
-}
-
-#[derive(Serialize)]
-struct Plan {
-  schema_version: u32,
-  head: String,
-  packages: Vec<Target>,
-}
-
-pub fn run(git: &Git, config: &Config, packages: &[Package], args: Release) -> Result<()> {
-  ensure!(
-    !git.shallow()?,
-    "release requires full Git history and tags"
-  );
-  let head = git.resolve("HEAD")?;
-  if let Some(expected) = &args.expected_head {
-    ensure!(
-      *expected == head,
-      "HEAD differs from --expected-head: expected {expected}, found {head}"
-    );
-  }
-  check_sources(git, packages)?;
-  let plan = plan(git, config, packages, &args, head)?;
-  if args.json {
-    println!("{}", serde_json::to_string_pretty(&plan)?);
-    return Ok(());
-  }
-  println!("Release source: {}", plan.head);
-  if plan.packages.is_empty() {
-    println!("All configured versions and tags are already published. Nothing to release.");
-    return Ok(());
-  }
-  for target in &plan.packages {
-    println!(
-      "Release {} v{} ({})",
-      target.package, target.version, target.tag
-    );
-    for manifest in &target.manifests {
-      println!(
-        "{} {}@{}: {}",
-        manifest.registry,
-        manifest.name,
-        manifest.version,
-        if manifest.published {
-          "already published; skip"
-        } else {
-          "publish required"
-        }
-      );
-    }
-  }
-  if args.check {
-    return Ok(());
-  }
-
-  let github = if plan.packages.iter().any(|p| p.github_release) && !args.dry_run {
-    let github = Github::new(
-      &git.root,
-      &config.github,
-      &config.http,
-      args.github_token.clone(),
-    )?;
-    github.preflight()?;
-    Some(github)
-  } else {
-    None
-  };
-  if !args.skip_push && !args.dry_run {
-    git.run(&["remote", "get-url", "origin"])
-      .context("origin is required to push release tags; use --skip-push --skip-github-release for local tags")?;
-  }
-  // Validate all build inputs before the first publication, including asset-only packages.
-  let targets = plan
-    .packages
-    .iter()
-    .filter(|p| !p.pending.is_empty() || p.github_release)
-    .map(|p| packages[p.index].clone())
-    .collect::<Vec<_>>();
-  artifacts::restore(
-    &git.root,
-    config,
-    &targets,
-    args.dry_run,
-    args.allow_missing_artifacts || args.dry_run,
+pub async fn release(workspace: &Workspace, args: ReleaseArgs) -> Result<Outcome> {
+  let git = &workspace.git;
+  let packages = &workspace.packages;
+  let branch = git.branch().ok();
+  let (id, record) = ReleaseRecord::select(
+    &workspace.root,
+    branch.as_deref(),
+    args.id.as_deref(),
+    packages,
   )?;
-  for target in &plan.packages {
-    if target.github_release {
-      artifacts::assets(
-        &git.root,
-        &packages[target.index],
-        args.allow_missing_artifacts || args.dry_run,
-      )?;
-    }
-  }
-  if !args.dry_run {
-    check_sources(git, packages)?;
-  }
-  for target in &plan.packages {
-    let package = &packages[target.index];
-    if !target.pending.is_empty() {
-      for script in &package.config.before_publish_scripts {
-        let mut words = shell_words::split(&script.command)?;
-        words.extend(script.args.iter().cloned());
-        registry::execute(&git.root.join(&package.path), &words, args.dry_run)
-          .with_context(|| format!("{}: before_publish failed", package.name))?;
-      }
-      // Hooks may generate build output, but cannot change committed release inputs.
-      if !args.dry_run {
-        ensure!(
-          git.resolve("HEAD")? == plan.head,
-          "HEAD changed during release"
-        );
-        check_sources(git, packages)?;
-      }
-      for index in manifest_order(&package.manifests)? {
-        if !target.pending.contains(&index) {
-          continue;
-        }
-        let manifest = &package.manifests[index];
-        let registry = manifest.registry();
-        let words = registry.command(&config.packages, manifest.version())?;
-        registry::publish(
-          &registry,
-          &git.root.join(manifest.path().parent().unwrap()),
-          &words,
-          args.dry_run,
-        )
-        .with_context(|| format!("{}: {} publish failed", manifest.name(), registry.label()))?;
-        if !args.dry_run {
-          ensure!(
-            git.resolve("HEAD")? == plan.head,
-            "HEAD changed during release"
-          );
-          check_sources(git, packages)?;
-        }
-      }
-    }
-    if args.dry_run {
-      if target.create_tag {
-        println!("would tag {} as {}", plan.head, target.tag);
-      }
-      if target.push_tag {
-        println!("would push tag {} to origin", target.tag);
-      }
-    } else {
-      ensure!(
-        git.resolve("HEAD")? == plan.head,
-        "HEAD changed during release"
-      );
-      if target.create_tag {
-        git.run(&["tag", &target.tag, &plan.head])?;
-      }
-      if target.push_tag {
-        git.run(&[
-          "push",
-          "origin",
-          &format!("refs/tags/{0}:refs/tags/{0}", target.tag),
-        ])?;
-      }
-    }
-    if target.github_release {
-      let assets = artifacts::assets(
-        &git.root,
-        package,
-        args.allow_missing_artifacts || args.dry_run,
-      )?;
-      if args.dry_run {
-        println!(
-          "would ensure GitHub release {} with {} assets",
-          target.tag,
-          assets.len()
-        );
-      } else {
-        github.as_ref().context("missing GitHub client")?.release(
-          &target.tag,
-          &format!("{} v{}", package.name, package.version()),
-          &changelog::release_body(&git.root, &config.changelog, package)?,
-          &assets,
-          !package.version().pre.is_empty(),
-        )?;
-      }
-    }
-  }
-  Ok(())
-}
+  println!("Releasing {id}");
 
-fn check_sources(git: &Git, packages: &[Package]) -> Result<()> {
-  for package in packages {
-    for manifest in &package.manifests {
-      ensure!(
-        git.read_at("HEAD", manifest.path())?.as_deref()
-          == Some(fs::read_to_string(git.root.join(manifest.path()))?.as_str()),
-        "{} differs from HEAD; release requires committed manifests",
-        manifest.path().display()
-      );
-    }
-  }
-  git
-    .run(&["diff", "--quiet", "HEAD", "--"])
-    .context("release requires committed source files; commit or restore tracked changes first")?;
-  ensure!(
-    git
-      .run(&["ls-files", "--others", "--exclude-standard"])?
-      .is_empty(),
-    "release requires committed source files; commit untracked files or ignore generated output first"
-  );
-  Ok(())
-}
+  let selected = record
+    .resolve(packages)?
+    .into_iter()
+    .map(|(package, _)| package);
+  let order = workspace.topo_sort(selected);
 
-fn plan(
-  git: &Git,
-  config: &Config,
-  packages: &[Package],
-  args: &Release,
-  head: String,
-) -> Result<Plan> {
-  let remote_tags = if !args.skip_push && git.run(&["remote", "get-url", "origin"]).is_ok() {
-    parse_remote_tags(
-      &git
-        .run(&["ls-remote", "--tags", "origin"])
-        .context("cannot inspect remote release tags")?,
-    )
-  } else {
-    BTreeMap::new()
+  let assets = resolve_all_assets(workspace, &order, args.dry_run)?;
+  let github = connect_github(workspace, &args, !assets.is_empty())?;
+  let registries = Registries::new(&workspace.config.registry, &workspace.config.http)?;
+  let published = published_versions(&order, &registries, args.dry_run).await;
+
+  let releaser = Releaser {
+    workspace,
+    git,
+    runner: ActionRunner::new(&workspace.root, args.dry_run)
+      .with_registries(&registries)
+      .with_github(github.as_ref()),
+    args: &args,
+    published,
+    assets,
   };
-  let http = HttpClient::new(&config.http)?;
-  let gh_enabled = !args.skip_github_release && !config.github.skip_releases;
-  let mut targets = BTreeMap::new();
-  let mut tags = BTreeSet::new();
-  for (index, package) in packages.iter().enumerate() {
-    ensure!(
-      package
-        .manifests
-        .iter()
-        .all(|m| m.version() == package.version()),
-      "{} has inconsistent manifest versions",
-      package.name
-    );
-    let tag = package.tag(config, package.version());
-    git.run(&["check-ref-format", &format!("refs/tags/{tag}")])?;
-    ensure!(tags.insert(tag.clone()), "duplicate release tag {tag}");
-    let local = if git
-      .run(&["show-ref", "--verify", &format!("refs/tags/{tag}")])
-      .is_ok()
-    {
-      Some(git.resolve(&format!("refs/tags/{tag}"))?)
-    } else {
-      None
-    };
-    let remote = remote_tags.get(&tag);
-    if let (Some(local), Some(remote)) = (&local, remote) {
-      ensure!(
-        local == remote,
-        "local and remote tag {tag} point to different commits"
-      );
-    }
-    let existing = remote.or(local.as_ref());
-    let mut pending = BTreeSet::new();
-    let mut manifests = Vec::new();
-    for (mi, manifest) in package.manifests.iter().enumerate() {
-      if !manifest.can_publish() || package.config.skip_publish {
-        continue;
-      }
-      let registry = manifest.registry();
-      let published = registry
-        .exists(
-          &http,
-          &config.registries,
-          manifest.name(),
-          manifest.version(),
-        )
-        .with_context(|| {
-          format!(
-            "{} {}@{}: cannot determine registry state; no packages published",
-            registry.label(),
-            manifest.name(),
-            manifest.version()
-          )
-        })?;
-      if !published {
-        pending.insert(mi);
-      }
-      manifests.push(PublishManifest {
-        path: manifest.path().to_string_lossy().into_owned(),
-        registry: registry.label(),
-        name: manifest.name().into(),
-        version: manifest.version().to_string(),
-        published,
-      });
-    }
-    let tag_complete = if args.skip_push {
-      local.is_some()
-    } else {
-      remote.is_some()
-    };
-    let github_release = gh_enabled && !package.config.skip_github_release;
-    // Tags on older commits belong to previous releases. Never publish new bytes for that version.
-    if let Some(source) = existing
-      && source != &head
-    {
-      ensure!(
-        git
-          .run(&["merge-base", "--is-ancestor", source, &head])
-          .is_ok(),
-        "tag {tag} points outside HEAD history; check out its source commit {source}"
-      );
-      ensure!(
-        pending.is_empty() && tag_complete,
-        "tag {tag} belongs to {source}; check out that commit to finish this release"
-      );
-      continue;
-    }
-    if pending.is_empty() && tag_complete && !github_release {
-      continue;
-    }
-    manifest_order(&package.manifests)?;
-    for mi in &pending {
-      let m = &package.manifests[*mi];
-      m.registry().command(&config.packages, m.version())?;
-    }
-    for script in &package.config.before_publish_scripts {
-      ensure!(
-        !shell_words::split(&script.command)?.is_empty(),
-        "{}: empty before_publish command",
-        package.name
-      );
-    }
-    targets.insert(
-      index,
-      Target {
-        index,
-        package: package.name.clone(),
-        path: package.id(),
-        version: package.version().to_string(),
-        tag,
-        create_tag: local.is_none() && remote.is_none(),
-        push_tag: !args.skip_push && remote.is_none(),
-        github_release,
-        manifests,
-        pending,
-      },
-    );
-  }
-  let order = Graph::new(packages).order(&targets.keys().copied().collect(), packages)?;
-  Ok(Plan {
-    schema_version: 1,
-    head,
-    packages: order
+
+  let mut failed = BTreeSet::new();
+  let mut report = vec![];
+  for package in order {
+    let blocked_by = workspace
+      .dependencies_of(package)
       .into_iter()
-      .map(|i| targets.remove(&i).unwrap())
-      .collect(),
-  })
+      .filter(|dependency| failed.contains(dependency))
+      .map(Package::name)
+      .collect::<Vec<_>>();
+    let result = match blocked_by.is_empty() {
+      true => releaser.release(package).await,
+      false => Err(anyhow!("Blocked by failed {}", blocked_by.join(", "))),
+    };
+    if let Err(error) = &result {
+      eprintln!("[{}] {error:#}", package.name());
+      failed.insert(package);
+    }
+    report.push((package, result.is_ok()));
+  }
+
+  println!();
+  for (package, succeeded) in report {
+    let status = if succeeded { "released" } else { "failed" };
+    println!("{status}: {} v{}", package.name(), package.version());
+  }
+  ensure!(failed.is_empty(), "{} package(s) failed", failed.len());
+  Ok(Outcome::Done)
 }
 
-fn parse_remote_tags(output: &str) -> BTreeMap<String, String> {
-  let mut tags = BTreeMap::new();
-  let mut peeled = BTreeMap::new();
-  for line in output.lines() {
-    if let Some((sha, reference)) = line.split_once('\t')
-      && let Some(tag) = reference.strip_prefix("refs/tags/")
-    {
-      if let Some(tag) = tag.strip_suffix("^{}") {
-        peeled.insert(tag.into(), sha.into());
-      } else {
-        tags.insert(tag.into(), sha.into());
-      }
-    }
+/// Connects up front, so a missing token stops the release before it starts.
+fn connect_github(
+  workspace: &Workspace,
+  args: &ReleaseArgs,
+  needed: bool,
+) -> Result<Option<GitHub>> {
+  if args.dry_run || !needed {
+    return Ok(None);
   }
-  tags.extend(peeled);
-  tags
+  let config = &workspace.config;
+  let token = args.github_token.as_deref();
+  GitHub::new(&workspace.root, &config.github, &config.http, token).map(Some)
 }
 
-fn manifest_order(manifests: &[Manifests]) -> Result<Vec<usize>> {
-  fn visit(
-    i: usize,
-    manifests: &[Manifests],
-    states: &mut [u8],
-    out: &mut Vec<usize>,
-  ) -> Result<()> {
-    ensure!(
-      states[i] != 1,
-      "cyclic manifest dependency involving {}",
-      manifests[i].name()
-    );
-    if states[i] == 2 {
-      return Ok(());
+fn uses_github_release(workspace: &Workspace, package: &Package) -> bool {
+  !workspace.config.github.skip_release && !package.config().skip_github_release
+}
+
+/// Assets of the packages with a GitHub release. Resolved first: a release must
+/// not go out and only then find its assets missing.
+fn resolve_all_assets<'a>(
+  workspace: &Workspace,
+  order: &[&'a Package],
+  dry_run: bool,
+) -> Result<BTreeMap<&'a Package, Vec<PathBuf>>> {
+  let mut all_assets = BTreeMap::new();
+  for &package in order {
+    if !uses_github_release(workspace, package) {
+      continue;
     }
-    states[i] = 1;
-    for dep in manifests[i].dependencies() {
-      if let Some(j) = manifests
-        .iter()
-        .position(|m| m.name() == dep.name && m.registry() == dep.registry)
-        && i != j
-      {
-        visit(j, manifests, states, out)?;
+    let mut assets = vec![];
+    for pattern in &package.config().assets {
+      let found = fs_util::find_glob_files(package.path(), pattern)?;
+      ensure!(
+        dry_run || !found.is_empty(),
+        "Asset pattern \"{pattern}\" of package \"{}\" matches no file",
+        package.name()
+      );
+      assets.extend(found);
+    }
+    all_assets.insert(package, assets);
+  }
+  Ok(all_assets)
+}
+
+/// Versions already in their registry. A failed lookup counts as missing, so the
+/// publish either goes through or is rejected as a duplicate.
+async fn published_versions(
+  order: &[&Package],
+  registries: &Registries,
+  dry_run: bool,
+) -> BTreeSet<PublishKey> {
+  let mut published = BTreeSet::new();
+  if dry_run {
+    return published;
+  }
+
+  let mut lookups = JoinSet::new();
+  for manifest in order
+    .iter()
+    .flat_map(|package| package.publishable_manifests())
+  {
+    let registries = registries.clone();
+    let key = publish_key(manifest);
+    lookups.spawn(async move {
+      let (kind, name, version) = &key;
+      let exists = registries.exists(*kind, name, version).await;
+      (key, exists)
+    });
+  }
+  while let Some(lookup) = lookups.join_next().await {
+    match lookup {
+      Ok((key, Ok(true))) => {
+        published.insert(key);
       }
+      Ok((_, Ok(false))) => {}
+      Ok(((_, name, version), Err(error))) => {
+        eprintln!("warning: cannot look up {name}@{version}: {error:#}");
+      }
+      Err(error) => eprintln!("warning: a registry lookup did not finish: {error}"),
     }
-    states[i] = 2;
-    out.push(i);
-    Ok(())
   }
-  let mut out = vec![];
-  let mut states = vec![0; manifests.len()];
-  for idx in 0..manifests.len() {
-    visit(idx, manifests, &mut states, &mut out)?;
+  published
+}
+
+/// Releases packages one at a time. Every step skips what is already done, so
+/// running a failed release again only does what is missing.
+struct Releaser<'a> {
+  workspace: &'a Workspace,
+  git: &'a Git,
+  runner: ActionRunner<'a>,
+  args: &'a ReleaseArgs,
+  published: BTreeSet<PublishKey>,
+  assets: BTreeMap<&'a Package, Vec<PathBuf>>,
+}
+
+impl Releaser<'_> {
+  async fn release(&self, package: &Package) -> Result<()> {
+    let tag = package.tag(&self.workspace.config.git, package.version());
+
+    let mut actions = self.publish_actions(package)?;
+    actions.extend(self.tag_actions(&tag));
+    if let Some(assets) = self.assets.get(package) {
+      actions.push(Action::EnsureRelease(Release {
+        title: format!("{} v{}", package.name(), package.version()),
+        body: package.release_notes(&self.workspace.root, &self.workspace.config.changelog)?,
+        prerelease: !package.version().pre.is_empty(),
+        assets: assets.clone(),
+        tag,
+      }));
+    }
+    self.runner.run(&actions).await
   }
-  Ok(out)
+
+  fn publish_actions(&self, package: &Package) -> Result<Vec<Action>> {
+    let pending = package
+      .publishable_manifests()
+      .filter(|manifest| !self.published.contains(&publish_key(manifest)))
+      .collect::<Vec<_>>();
+    if pending.is_empty() {
+      return Ok(vec![]);
+    }
+
+    let mut actions = package
+      .config()
+      .before_publish_scripts
+      .iter()
+      .map(|script| {
+        let mut words = shell_words::split(&script.command)
+          .with_context(|| format!("Invalid script: {}", script.command))?;
+        ensure!(!words.is_empty(), "Script of {} is empty", package.name());
+        let cmd = words.remove(0);
+        words.extend(script.args.iter().cloned());
+        Ok(Action::RunProcess {
+          cmd,
+          args: words,
+          cwd: package.path().to_path_buf(),
+        })
+      })
+      .collect::<Result<Vec<_>>>()?;
+    actions.extend(pending.into_iter().map(|manifest| Action::Publish {
+      kind: manifest.kind(),
+      name: manifest.name().to_string(),
+      version: manifest.version().clone(),
+      dir: manifest.dir().to_path_buf(),
+      args: self.publish_args(manifest),
+    }));
+    Ok(actions)
+  }
+
+  fn publish_args(&self, manifest: &Manifest) -> Vec<String> {
+    if manifest.kind() != ManifestKind::PackageJson {
+      return vec![];
+    }
+    npm::dist_tag(manifest.version())
+      .or(self.args.dist_tag.as_deref())
+      .map_or(vec![], |tag| vec!["--tag".to_string(), tag.to_string()])
+  }
+
+  fn tag_actions(&self, tag: &str) -> Vec<Action> {
+    let root = self.workspace.root.as_path();
+    let mut actions = vec![];
+    if !self.git.tag_exists(tag) {
+      actions.push(Action::process("git", &["tag", tag], root));
+    }
+    let tag_ref = format!("refs/tags/{tag}");
+    actions.push(Action::process(
+      "git",
+      &["push", "--quiet", "origin", &tag_ref],
+      root,
+    ));
+    actions
+  }
 }

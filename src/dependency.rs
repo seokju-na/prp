@@ -1,93 +1,58 @@
-use crate::manifest::Manifest;
-use crate::package::Package;
-use anyhow::{Result, ensure};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::manifest::ManifestKind;
+use crate::serde_util;
+use semver::Version;
+use serde_json::Value;
 
-pub struct Graph {
-  pub dependencies: Vec<BTreeSet<usize>>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencyVersion {
+  Version(String),
+  Workspace,
+  Other,
 }
 
-impl Graph {
-  pub fn new(packages: &[Package]) -> Self {
-    let mut names = BTreeMap::new();
-    for (idx, package) in packages.iter().enumerate() {
-      for m in &package.manifests {
-        names.insert((m.registry(), m.name()), idx);
-      }
+impl DependencyVersion {
+  pub fn from_npm(str: &str) -> DependencyVersion {
+    if let Ok(ver) = semver::Version::parse(str) {
+      return DependencyVersion::Version(ver.to_string());
     }
-    let dependencies = packages
-      .iter()
-      .enumerate()
-      .map(|(idx, p)| {
-        p.manifests
-          .iter()
-          .flat_map(|m| m.dependencies())
-          .filter_map(|d| names.get(&(d.registry, d.name.as_str())).copied())
-          .filter(|dep| *dep != idx)
-          .collect()
-      })
-      .collect();
-    Self { dependencies }
-  }
-  pub fn affected(&self, seeds: &BTreeSet<usize>) -> BTreeSet<usize> {
-    let mut affected = seeds.clone();
-    loop {
-      let previous = affected.len();
-      for (idx, deps) in self.dependencies.iter().enumerate() {
-        if deps.iter().any(|d| affected.contains(d)) {
-          affected.insert(idx);
-        }
-      }
-      if previous == affected.len() {
-        return affected;
-      }
+    if str.starts_with("workspace:") {
+      return DependencyVersion::Workspace;
     }
+    DependencyVersion::Other
   }
 
-  pub fn upstream(&self, index: usize) -> BTreeSet<usize> {
-    let mut found = BTreeSet::new();
-    let mut queue = vec![index];
-    while let Some(current) = queue.pop() {
-      for dependency in &self.dependencies[current] {
-        if *dependency != index && found.insert(*dependency) {
-          queue.push(*dependency);
-        }
-      }
+  pub fn from_cargo(value: &Value) -> DependencyVersion {
+    if let Some(ver) = value.as_str()
+      && let Ok(ver) = semver::Version::parse(ver)
+    {
+      return DependencyVersion::Version(ver.to_string());
     }
-    found
+    if let Ok(Some(true)) = serde_util::parse_bool(value, "workspace") {
+      return DependencyVersion::Workspace;
+    }
+    DependencyVersion::Other
   }
-  pub fn order(&self, subset: &BTreeSet<usize>, packages: &[Package]) -> Result<Vec<usize>> {
-    fn visit(
-      idx: usize,
-      graph: &Graph,
-      subset: &BTreeSet<usize>,
-      packages: &[Package],
-      states: &mut [u8],
-      out: &mut Vec<usize>,
-    ) -> Result<()> {
-      ensure!(
-        states[idx] != 1,
-        "cyclic dependency involving {}",
-        packages[idx].name
-      );
-      if states[idx] == 2 {
-        return Ok(());
-      }
-      states[idx] = 1;
-      for dep in &graph.dependencies[idx] {
-        if subset.contains(dep) {
-          visit(*dep, graph, subset, packages, states, out)?;
-        }
-      }
-      states[idx] = 2;
-      out.push(idx);
-      Ok(())
-    }
-    let mut states = vec![0; self.dependencies.len()];
-    let mut order = vec![];
-    for idx in subset {
-      visit(*idx, self, subset, packages, &mut states, &mut order)?;
-    }
-    Ok(order)
-  }
+}
+
+/// A package a manifest depends on, in the registry of `kind`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dependency {
+  pub kind: ManifestKind,
+  pub name: String,
+  pub version: DependencyVersion,
+}
+
+pub type Dependencies = Vec<Dependency>;
+
+/// `current` pointed at `next`, keeping its operator. `None` for protocols
+/// (`workspace:`), wildcards and compound ranges.
+pub fn next_requirement(current: &str, next: &Version) -> Option<String> {
+  let start = current.find(|c: char| c.is_ascii_digit())?;
+  let (operator, version) = current.split_at(start);
+  let plain = version
+    .chars()
+    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+  let wildcard = version.split('.').any(|part| part == "x");
+  (matches!(operator, "" | "^" | "~" | "=" | ">=") && plain && !wildcard)
+    .then(|| format!("{operator}{next}"))
 }

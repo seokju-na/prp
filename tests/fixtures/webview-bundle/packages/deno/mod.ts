@@ -1,1 +1,1 @@
-export const fixtureValue = 3;
+export {};

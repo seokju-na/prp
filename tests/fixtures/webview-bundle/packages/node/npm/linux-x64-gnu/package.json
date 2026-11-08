@@ -1,7 +1,4 @@
 {
-  "name": "@fixture/node-linux-x64-gnu",
-  "version": "0.3.0",
-  "files": [
-    "binding.node"
-  ]
+  "name": "@wvb/node-linux-x64-gnu",
+  "version": "0.3.1"
 }

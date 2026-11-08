@@ -48,6 +48,7 @@ Install PRP using Cargo:
 
 ```sh
 cargo install please-release-please
+```
 
 Or from npm:
 

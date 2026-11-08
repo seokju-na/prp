@@ -1,6 +1,6 @@
 {
   "name": "please-release-please-win32-arm64",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "The win32-arm64 binary of prp",
   "license": "MIT",
   "homepage": "https://github.com/seokju-na/prp",

@@ -1,6 +1,6 @@
 {
   "name": "please-release-please",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Please release please: versions, changelogs and publishing for monorepos",
   "license": "MIT",
   "homepage": "https://github.com/seokju-na/prp",

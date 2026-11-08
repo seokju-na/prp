@@ -5,13 +5,13 @@ const { spawnSync } = require('node:child_process');
 const os = require('node:os');
 const path = require('node:path');
 
-const { version } = require('../package.json');
+const { name, version } = require('../package.json');
 
 function binaryPath() {
   if (process.env.PRP_BINARY) {
     return process.env.PRP_BINARY;
   }
-  const platform = `prp-${process.platform}-${process.arch}`;
+  const platform = `${name}-${process.platform}-${process.arch}`;
   let manifestPath;
   try {
     manifestPath = require.resolve(`${platform}/package.json`);
@@ -22,7 +22,7 @@ function binaryPath() {
   }
   const manifest = require(manifestPath);
   if (manifest.version !== version) {
-    throw new Error(`${platform}@${manifest.version} does not match prp@${version}; reinstall prp.`);
+    throw new Error(`${platform}@${manifest.version} does not match ${name}@${version}; reinstall ${name}.`);
   }
   const executable = process.platform === 'win32' ? 'prp.exe' : 'prp';
   return path.join(path.dirname(manifestPath), 'bin', executable);

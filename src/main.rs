@@ -35,7 +35,7 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf, absolute};
 
 #[derive(Parser)]
-#[command(version, about = "Please Release Please")]
+#[command(name = "prp", version, about = "Please Release Please")]
 struct Cli {
   /// Run as if started in this directory.
   #[arg(long, global = true)]

@@ -7,7 +7,7 @@ import { executable, packageDir, rootDir, targets } from './npm-package.js';
 
 const mainDir = path.join(rootDir, 'npm/prp');
 const read = dir => JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
-const { version } = read(mainDir);
+const { name: mainName, version } = read(mainDir);
 
 const args = process.argv.slice(2);
 const prerelease = version.split('-')[1]?.split('.')[0];
@@ -24,7 +24,7 @@ for (const target of targets) {
   }
   const { name, version: own } = read(dir);
   if (own !== version) {
-    throw new Error(`${name}@${own} does not match prp@${version}`);
+    throw new Error(`${name}@${own} does not match ${mainName}@${version}`);
   }
 }
 

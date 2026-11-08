@@ -1,0 +1,9 @@
+{
+  "name": "@wvb/cli",
+  "version": "0.3.0",
+  "dependencies": {
+    "@wvb/config": "workspace:*",
+    "@wvb/node": "workspace:*",
+    "@wvb/remote-local": "workspace:*"
+  }
+}

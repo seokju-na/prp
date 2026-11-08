@@ -1,0 +1,7 @@
+{
+  "name": "@wvb/config",
+  "version": "0.3.0",
+  "peerDependencies": {
+    "@wvb/node": "workspace:^"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "please-release-please-darwin-x64",
+  "version": "0.0.0",
+  "description": "The darwin-x64 binary of prp",
+  "license": "MIT",
+  "homepage": "https://github.com/seokju-na/prp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/seokju-na/prp"
+  },
+  "author": {
+    "name": "Seokju Na",
+    "email": "seokju.me@gmail.com"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "preferUnplugged": true,
+  "publishConfig": {
+    "executableFiles": [
+      "bin/prp"
+    ]
+  }
+}

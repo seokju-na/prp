@@ -1,0 +1,8 @@
+{
+  "name": "@wvb/remote-local",
+  "version": "0.3.0",
+  "dependencies": {
+    "@wvb/config": "workspace:*",
+    "@wvb/remote-base": "workspace:*"
+  }
+}

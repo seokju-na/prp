@@ -1,0 +1,10 @@
+{
+  "name": "@wvb/node",
+  "version": "0.3.1",
+  "main": "index.js",
+  "optionalDependencies": {
+    "@wvb/node-darwin-arm64": "workspace:^",
+    "@wvb/node-linux-x64-gnu": "workspace:^",
+    "@wvb/node-win32-x64-msvc": "workspace:^"
+  }
+}

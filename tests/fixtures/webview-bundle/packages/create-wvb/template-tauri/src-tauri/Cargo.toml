@@ -1,0 +1,6 @@
+[package]
+name = "wvb-app"
+version = "0.1.0"
+
+[dependencies]
+wvb-tauri = "0.3.0"

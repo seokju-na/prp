@@ -1,0 +1,14 @@
+{
+  "name": "please-release-please-workspace",
+  "type": "module",
+  "private": true,
+  "packageManager": "yarn@4.18.1",
+  "workspaces": [
+    "npm/*"
+  ],
+  "devDependencies": {
+    "@types/node": "^26",
+    "es-toolkit": "1.53.0",
+    "typescript": "7.0.2"
+  }
+}

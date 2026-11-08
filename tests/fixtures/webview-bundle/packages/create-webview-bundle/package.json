@@ -1,0 +1,7 @@
+{
+  "name": "create-webview-bundle",
+  "version": "0.2.0",
+  "dependencies": {
+    "create-wvb": "workspace:*"
+  }
+}

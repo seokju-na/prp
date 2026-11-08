@@ -1,0 +1,10 @@
+{
+  "name": "webview-bundle-workspace",
+  "private": true,
+  "packageManager": "yarn@4.12.0",
+  "workspaces": [
+    "packages/*",
+    "packages/remote/*",
+    "packages/node/npm/*"
+  ]
+}

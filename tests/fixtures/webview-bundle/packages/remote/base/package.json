@@ -1,0 +1,7 @@
+{
+  "name": "@wvb/remote-base",
+  "version": "0.3.0",
+  "peerDependencies": {
+    "@wvb/config": "workspace:*"
+  }
+}

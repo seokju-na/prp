@@ -1,0 +1,55 @@
+[git]
+default_branch = "main"
+release_tag_format = "{package_name}/{version}"
+
+[packages]
+includes = ["packages/*", "packages/remote/*"]
+
+[packages."packages/bridge"]
+name = "bridge"
+
+[packages."packages/cli"]
+name = "cli"
+
+[packages."packages/config"]
+name = "config"
+
+[packages."packages/core"]
+name = "core"
+
+# Generated templates live under here, and describe apps rather than packages.
+[packages."packages/create-wvb"]
+name = "create-wvb"
+manifests = ["package.json"]
+
+[packages."packages/create-webview-bundle"]
+name = "create-webview-bundle"
+
+[packages."packages/deno"]
+name = "deno"
+
+[packages."packages/electron"]
+name = "electron"
+
+[packages."packages/ffi"]
+name = "ffi"
+assets = [".output/android.zip", ".output/apple.zip"]
+
+# The napi platform packages release as one with the binding.
+[packages."packages/node"]
+name = "node"
+manifests = ["package.json", "Cargo.toml", "npm/*/package.json"]
+before_publish_scripts = [{ command = "yarn", args = ["artifacts"] }]
+assets = ["artifacts/*.node"]
+
+[packages."packages/remote/base"]
+name = "remote-base"
+
+[packages."packages/remote/local"]
+name = "remote-local"
+
+[packages."packages/tauri"]
+name = "tauri"
+
+[packages."packages/testing"]
+name = "testing"

@@ -1,0 +1,36 @@
+{
+  "name": "please-release-please",
+  "version": "0.0.0",
+  "description": "Please release please: versions, changelogs and publishing for monorepos",
+  "license": "MIT",
+  "homepage": "https://github.com/seokju-na/prp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/seokju-na/prp"
+  },
+  "author": {
+    "name": "Seokju Na",
+    "email": "seokju.me@gmail.com"
+  },
+  "bin": {
+    "prp": "bin/prp.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "optionalDependencies": {
+    "please-release-please-darwin-arm64": "workspace:*",
+    "please-release-please-darwin-x64": "workspace:*",
+    "please-release-please-linux-arm64": "workspace:*",
+    "please-release-please-linux-x64": "workspace:*",
+    "please-release-please-win32-arm64": "workspace:*",
+    "please-release-please-win32-x64": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26",
+    "typescript": "7.0.2"
+  }
+}

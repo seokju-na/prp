@@ -112,8 +112,8 @@ repo = "monorepo"
 # Release without creating GitHub releases.
 # Default: false
 skip_releases = false
-# The branch of a release pull request. Placeholders: {branch}, {commit}.
-# Default: "prp/{branch}_{commit}"
+# The branch of a release pull request. Placeholders: {branch}, {sha}.
+# Default: "prp/{branch}_{sha}"
 release_pr_branch_format = "release/{branch}"
 # The title of a release pull request and its commit. Placeholders: {num}.
 # Commits starting with its text before the first placeholder count as release commits.

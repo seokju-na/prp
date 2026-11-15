@@ -210,7 +210,7 @@ impl Publishing<'_> {
     config
       .release_pr_branch_format
       .replace("{branch}", self.base)
-      .replace("{commit}", &self.head[..7])
+      .replace("{sha}", &self.head[..7])
   }
 
   fn body(&self, plan: &Plan) -> String {

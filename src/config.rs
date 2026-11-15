@@ -81,7 +81,7 @@ impl From<Option<GitHubConfig>> for ResolvedGitHubConfig {
       skip_release: val.skip_releases.unwrap_or(false),
       release_pr_branch_format: val
         .release_pr_branch_format
-        .unwrap_or("prp/{branch}_{commit}".to_string()),
+        .unwrap_or("prp/{branch}_{sha}".to_string()),
       release_pr_title_format: val
         .release_pr_title_format
         .unwrap_or("release: {num}(s) packages".to_string()),

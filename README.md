@@ -198,6 +198,11 @@ prerelease_format = "canary-<sha>"
 # The npm dist-tag of a snapshot.
 # Default: the part of prerelease_format before the first "-", such as "snapshot"
 npm_dist_tag = "canary"
+# Create one GitHub prerelease for a snapshot, tagged with its prerelease at the
+# current commit, with the assets of every package. Also turned on by --github-release.
+# github.skip_releases and skip_github_release of a package still apply.
+# Default: false
+enable_github_release = true
 
 [http]
 # The User-Agent of HTTP requests.

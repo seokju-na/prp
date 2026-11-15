@@ -21,6 +21,15 @@ impl<'a> Snapshot<'a> {
     Self { manifests }
   }
 
+  pub fn version_of(&self, manifest: &Manifest) -> Result<&Version> {
+    self
+      .manifests
+      .iter()
+      .find(|(candidate, _)| candidate.path() == manifest.path())
+      .map(|(_, version)| version)
+      .with_context(|| format!("{} has no snapshot version", manifest.name()))
+  }
+
   pub fn versions(&self) -> ReleasedVersions {
     self
       .manifests

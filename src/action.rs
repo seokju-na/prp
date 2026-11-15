@@ -155,6 +155,10 @@ impl<'a> ActionRunner<'a> {
         out.push('\n');
       }
       Action::EnsureRelease(release) => {
+        if self.dry_run {
+          out.push_str(&paint(Style::new().dim(), &release.body));
+          out.push('\n');
+        }
         for asset in &release.assets {
           let verb = paint(action.verb_style(), "upload");
           out.push_str(&format!("{prefix}{verb} {}\n", relative(self.root, asset)));

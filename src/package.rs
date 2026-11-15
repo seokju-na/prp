@@ -55,10 +55,6 @@ impl Ord for Package {
 }
 
 impl Package {
-  pub fn path(&self) -> &Path {
-    &self.path
-  }
-
   pub fn relative_path(&self) -> &RelativePath {
     &self.relative_path
   }
@@ -103,6 +99,22 @@ impl Package {
         .manifests
         .iter()
         .any(|manifest| manifest.name() == input)
+  }
+
+  /// Files matching the `assets` patterns. A pattern matching nothing is an error,
+  /// except in a dry run.
+  pub fn assets(&self, dry_run: bool) -> Result<Vec<PathBuf>> {
+    let mut assets = vec![];
+    for pattern in &self.config.assets {
+      let found = fs_util::find_glob_files(&self.path, pattern)?;
+      ensure!(
+        dry_run || !found.is_empty(),
+        "Asset pattern \"{pattern}\" of package \"{}\" matches no file",
+        self.name
+      );
+      assets.extend(found);
+    }
+    Ok(assets)
   }
 
   /// Runs the `before_publish_scripts` in the package directory.

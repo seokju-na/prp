@@ -1,12 +1,14 @@
 use crate::action::{Action, ActionRunner};
 use crate::commands::Outcome;
+use crate::github::{GitHub, Release};
 use crate::manifest::{Manifest, ManifestKind};
 use crate::package::Package;
 use crate::registry::Registries;
 use crate::snapshot::Snapshot;
 use crate::workspace::Workspace;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::Args;
+use semver::Prerelease;
 
 #[derive(Args, Default)]
 pub struct SnapshotArgs {
@@ -18,6 +20,11 @@ pub struct SnapshotArgs {
   /// Show what would happen without changing anything.
   #[arg(long)]
   pub dry_run: bool,
+  /// Create a GitHub prerelease even when `snapshot.enable_github_release` is off.
+  #[arg(long)]
+  pub github_release: bool,
+  #[arg(long, env = "GITHUB_TOKEN", hide_env_values = true)]
+  pub github_token: Option<String>,
 }
 
 pub async fn snapshot(workspace: &Workspace, args: SnapshotArgs) -> Result<Outcome> {
@@ -59,8 +66,25 @@ pub async fn snapshot(workspace: &Workspace, args: SnapshotArgs) -> Result<Outco
   }
 
   let registries = Registries::new(&workspace.config.registry, &workspace.config.http)?;
+  let release = github_release(workspace, &snapshot, &prerelease, &head, &registries, &args)?;
+  let github = match &release {
+    Some(_) if !args.dry_run => {
+      let config = &workspace.config;
+      let token = args.github_token.as_deref();
+      Some(GitHub::new(
+        &workspace.root,
+        &config.github,
+        &config.http,
+        token,
+      )?)
+    }
+    _ => None,
+  };
+  actions.extend(release.map(Action::EnsureRelease));
+
   ActionRunner::new(&workspace.root, args.dry_run)
     .with_registries(&registries)
+    .with_github(github.as_ref())
     .run(&actions)
     .await?;
   Ok(Outcome::Done)
@@ -84,11 +108,7 @@ fn publish_action(
   manifest: &Manifest,
   npm_dist_tag: Option<&str>,
 ) -> Result<Action> {
-  let (_, version) = snapshot
-    .manifests
-    .iter()
-    .find(|(candidate, _)| candidate.path() == manifest.path())
-    .with_context(|| format!("{} has no snapshot version", manifest.name()))?;
+  let version = snapshot.version_of(manifest)?;
   let args = match (manifest.kind(), npm_dist_tag) {
     (ManifestKind::PackageJson, Some(tag)) => vec!["--tag".to_string(), tag.to_string()],
     _ => vec![],
@@ -100,4 +120,49 @@ fn publish_action(
     dir: manifest.dir().to_path_buf(),
     args,
   })
+}
+
+/// One GitHub prerelease for the whole snapshot, holding the assets of every
+/// package with a GitHub release. Its tag is created at `head`.
+fn github_release(
+  workspace: &Workspace,
+  snapshot: &Snapshot,
+  prerelease: &Prerelease,
+  head: &str,
+  registries: &Registries,
+  args: &SnapshotArgs,
+) -> Result<Option<Release>> {
+  let enabled = args.github_release || workspace.config.snapshot.enable_github_release;
+  if !enabled {
+    return Ok(None);
+  }
+  let packages = workspace
+    .packages
+    .iter()
+    .filter(|package| workspace.uses_github_release(package))
+    .collect::<Vec<_>>();
+  if packages.is_empty() {
+    return Ok(None);
+  }
+  let mut assets = vec![];
+  for package in &packages {
+    assets.extend(package.assets(args.dry_run)?);
+  }
+
+  let mut body = format!("Snapshot of `{}`.\n", &head[..7]);
+  for package in workspace.topo_sort(packages) {
+    for manifest in package.publishable_manifests() {
+      let version = snapshot.version_of(manifest)?;
+      let registry = registries.name(manifest.kind());
+      body.push_str(&format!("\n- `{}@{version}` ({registry})", manifest.name()));
+    }
+  }
+  Ok(Some(Release {
+    tag: prerelease.to_string(),
+    title: prerelease.to_string(),
+    body,
+    prerelease: true,
+    assets,
+    target: Some(head.to_string()),
+  }))
 }

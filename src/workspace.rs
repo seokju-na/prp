@@ -205,6 +205,10 @@ impl Workspace {
   }
 
   /// The package going by `input`: its path, its name or a manifest name.
+  pub fn uses_github_release(&self, package: &Package) -> bool {
+    !self.config.github.skip_release && !package.config().skip_github_release
+  }
+
   pub fn find_package(&self, input: &str) -> Option<&Package> {
     self.packages.iter().find(|package| package.matches(input))
   }

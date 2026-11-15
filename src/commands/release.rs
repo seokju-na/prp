@@ -1,6 +1,5 @@
 use crate::action::{Action, ActionRunner};
 use crate::commands::Outcome;
-use crate::fs_util;
 use crate::git::Git;
 use crate::github::{GitHub, Release};
 use crate::manifest::{Manifest, ManifestKind};
@@ -117,10 +116,6 @@ fn connect_github(
   GitHub::new(&workspace.root, &config.github, &config.http, token).map(Some)
 }
 
-fn uses_github_release(workspace: &Workspace, package: &Package) -> bool {
-  !workspace.config.github.skip_release && !package.config().skip_github_release
-}
-
 /// Assets of the packages with a GitHub release. Resolved first: a release must
 /// not go out and only then find its assets missing.
 fn resolve_all_assets<'a>(
@@ -128,24 +123,11 @@ fn resolve_all_assets<'a>(
   order: &[&'a Package],
   dry_run: bool,
 ) -> Result<BTreeMap<&'a Package, Vec<PathBuf>>> {
-  let mut all_assets = BTreeMap::new();
-  for &package in order {
-    if !uses_github_release(workspace, package) {
-      continue;
-    }
-    let mut assets = vec![];
-    for pattern in &package.config().assets {
-      let found = fs_util::find_glob_files(package.path(), pattern)?;
-      ensure!(
-        dry_run || !found.is_empty(),
-        "Asset pattern \"{pattern}\" of package \"{}\" matches no file",
-        package.name()
-      );
-      assets.extend(found);
-    }
-    all_assets.insert(package, assets);
-  }
-  Ok(all_assets)
+  order
+    .iter()
+    .filter(|package| workspace.uses_github_release(package))
+    .map(|&package| Ok((package, package.assets(dry_run)?)))
+    .collect()
 }
 
 /// Versions already in their registry. A failed lookup counts as missing, so the
@@ -211,6 +193,7 @@ impl Releaser<'_> {
         body: package.release_notes(&self.workspace.root, &self.workspace.config.changelog)?,
         prerelease: !package.version().pre.is_empty(),
         assets: assets.clone(),
+        target: None,
         tag,
       }));
     }

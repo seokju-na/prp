@@ -34,6 +34,8 @@ pub struct Release {
   pub body: String,
   pub prerelease: bool,
   pub assets: Vec<PathBuf>,
+  /// The commit GitHub creates `tag` at when it is not pushed yet.
+  pub target: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,12 +196,15 @@ impl GitHub {
     let found = match existing {
       Some(found) => found,
       None => {
-        let body = json!({
+        let mut body = json!({
           "tag_name": release.tag,
           "name": release.title,
           "body": release.body,
           "prerelease": release.prerelease,
         });
+        if let Some(target) = &release.target {
+          body["target_commitish"] = json!(target);
+        }
         let request = self
           .request(Method::POST, self.url(&["releases"])?)
           .json(&body);

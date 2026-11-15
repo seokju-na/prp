@@ -181,6 +181,7 @@ impl From<PackageConfig> for ResolvedPackageConfig {
 pub struct ResolvedSnapshotConfig {
   pub prerelease_format: String,
   pub npm_dist_tag: Option<String>,
+  pub enable_github_release: bool,
 }
 
 impl From<Option<SnapshotConfig>> for ResolvedSnapshotConfig {
@@ -192,6 +193,7 @@ impl From<Option<SnapshotConfig>> for ResolvedSnapshotConfig {
     Self {
       prerelease_format,
       npm_dist_tag: val.npm_dist_tag,
+      enable_github_release: val.enable_github_release.unwrap_or(false),
     }
   }
 }
@@ -315,6 +317,7 @@ pub struct JsrRegistryConfig {
 pub struct SnapshotConfig {
   pub prerelease_format: Option<String>,
   pub npm_dist_tag: Option<String>,
+  pub enable_github_release: Option<bool>,
 }
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {

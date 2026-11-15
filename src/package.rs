@@ -1,3 +1,4 @@
+use crate::action::Action;
 use crate::changelog::{self, ChangelogEntry};
 use crate::config::{
   ResolvedChangelogConfig, ResolvedGitConfig, ResolvedPackageConfig, ResolvedPackagesConfig,
@@ -102,6 +103,27 @@ impl Package {
         .manifests
         .iter()
         .any(|manifest| manifest.name() == input)
+  }
+
+  /// Runs the `before_publish_scripts` in the package directory.
+  pub fn before_publish_actions(&self) -> Result<Vec<Action>> {
+    self
+      .config
+      .before_publish_scripts
+      .iter()
+      .map(|script| {
+        let mut words = shell_words::split(&script.command)
+          .with_context(|| format!("Invalid script: {}", script.command))?;
+        ensure!(!words.is_empty(), "Script of {} is empty", self.name);
+        let cmd = words.remove(0);
+        words.extend(script.args.iter().cloned());
+        Ok(Action::RunProcess {
+          cmd,
+          args: words,
+          cwd: self.path.clone(),
+        })
+      })
+      .collect()
   }
 
   /// The version of the package's top-level manifest.

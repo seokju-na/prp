@@ -191,6 +191,14 @@ skip_github_release = false
 # Default: false
 skip_publish = false
 
+[snapshot]
+# The prerelease added to every current version. Placeholders: <sha>, <yyyymmdd>.
+# Default: "snapshot-<sha>-<yyyymmdd>"
+prerelease_format = "canary-<sha>"
+# The npm dist-tag of a snapshot.
+# Default: the part of prerelease_format before the first "-", such as "snapshot"
+npm_dist_tag = "canary"
+
 [http]
 # The User-Agent of HTTP requests.
 # Default: "prp/<version>"
@@ -226,15 +234,14 @@ publish_command = "deno publish --allow-dirty --allow-slow-types"
 
 ## Commands
 
-| Command       | Description                                                                       |
-|---------------|-----------------------------------------------------------------------------------|
-| `prp init`    | Create `.prp/config.toml`                                                         |
-| `prp status`  | List packages, their groups and their latest published versions                   |
-| `prp change`  | Write a change file for the current commit                                        |
-| `prp prepare` | Choose versions, update manifests and changelogs, and open a release pull request |
-| `prp release` | Publish packages, push tags and create GitHub releases                            |
-
-`prp prepare` opens an editor to review the versions. Pass `--auto` to skip it, which is required outside a terminal.
+| Command        | Description                                                                       |
+|----------------|-----------------------------------------------------------------------------------|
+| `prp init`     | Create `.prp/config.toml`                                                         |
+| `prp status`   | List packages, their groups and their latest published versions                   |
+| `prp change`   | Write a change file for the current commit                                        |
+| `prp prepare`  | Choose versions, update manifests and changelogs, and open a release pull request |
+| `prp release`  | Publish packages, push tags and create GitHub releases                            |
+| `prp snapshot` | Publish the current versions as snapshot prereleases                              |
 
 ### Exit codes
 

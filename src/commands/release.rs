@@ -9,7 +9,7 @@ use crate::package::Package;
 use crate::registry::Registries;
 use crate::release_record::ReleaseRecord;
 use crate::workspace::Workspace;
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Result, anyhow, ensure};
 use clap::Args;
 use semver::Version;
 use std::collections::{BTreeMap, BTreeSet};
@@ -226,23 +226,7 @@ impl Releaser<'_> {
       return Ok(vec![]);
     }
 
-    let mut actions = package
-      .config()
-      .before_publish_scripts
-      .iter()
-      .map(|script| {
-        let mut words = shell_words::split(&script.command)
-          .with_context(|| format!("Invalid script: {}", script.command))?;
-        ensure!(!words.is_empty(), "Script of {} is empty", package.name());
-        let cmd = words.remove(0);
-        words.extend(script.args.iter().cloned());
-        Ok(Action::RunProcess {
-          cmd,
-          args: words,
-          cwd: package.path().to_path_buf(),
-        })
-      })
-      .collect::<Result<Vec<_>>>()?;
+    let mut actions = package.before_publish_actions()?;
     actions.extend(pending.into_iter().map(|manifest| Action::Publish {
       kind: manifest.kind(),
       name: manifest.name().to_string(),

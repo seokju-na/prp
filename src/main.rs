@@ -20,6 +20,7 @@ mod plan;
 mod registry;
 mod release_record;
 mod serde_util;
+mod snapshot;
 mod workspace;
 
 use crate::commands::Outcome;
@@ -27,6 +28,7 @@ use crate::commands::change::{ChangeArgs, change};
 use crate::commands::init::{InitArgs, init};
 use crate::commands::prepare::{PrepareArgs, prepare};
 use crate::commands::release::{ReleaseArgs, release};
+use crate::commands::snapshot::{SnapshotArgs, snapshot};
 use crate::commands::status::status;
 use crate::config::{CONFIG_PATH, ResolvedConfig};
 use crate::workspace::Workspace;
@@ -57,6 +59,8 @@ pub enum Command {
   Prepare(PrepareArgs),
   /// Publish packages, push tags and create GitHub releases.
   Release(ReleaseArgs),
+  /// Publish the current versions as snapshot prereleases.
+  Snapshot(SnapshotArgs),
   /// List the packages, their groups and their latest published versions.
   Status,
 }
@@ -94,6 +98,7 @@ fn run_cli(cli: Cli) -> Result<Outcome> {
       Command::Change(args) => change(&workspace()?, args).await,
       Command::Prepare(args) => prepare(&workspace()?, args).await,
       Command::Release(args) => release(&workspace()?, args).await,
+      Command::Snapshot(args) => snapshot(&workspace()?, args).await,
       Command::Status => status(&workspace()?).await,
     }
   })

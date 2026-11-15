@@ -7,12 +7,13 @@ use crate::dependency::DependencyVersion;
 use crate::edit::{self, Patch};
 use crate::fs_util;
 use crate::git::Git;
-use crate::manifest::{ManifestKind, ReleasedVersions};
+use crate::manifest::{Manifest, ManifestKind, ReleasedVersions};
 use crate::package::Package;
 use crate::plan::Plan;
 use crate::registry::Registries;
 use crate::release_record::ReleaseRecord;
 use anyhow::{Context, Result, anyhow, ensure};
+use semver::Version;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -60,20 +61,28 @@ impl Workspace {
     Ok(workspace)
   }
 
-  /// Moves the manifests of `plan`, and the versions pinned in the root
-  /// `Cargo.toml`, to their next versions.
-  pub fn version_actions(&self, plan: &Plan) -> Result<Vec<Action>> {
-    let versions = plan.versions();
+  pub fn plan_actions(&self, plan: &Plan) -> Result<Vec<Action>> {
+    let manifests = plan
+      .packages
+      .iter()
+      .flat_map(|planned| &planned.manifests)
+      .map(|(manifest, next)| (*manifest, next));
+    self.bump_version_actions(manifests, &plan.versions())
+  }
+
+  pub fn bump_version_actions<'a>(
+    &self,
+    manifests: impl IntoIterator<Item = (&'a Manifest, &'a Version)>,
+    versions: &ReleasedVersions,
+  ) -> Result<Vec<Action>> {
     let mut actions = vec![];
-    for planned in &plan.packages {
-      for (manifest, next) in &planned.manifests {
-        actions.push(Action::FileWrite {
-          path: manifest.path().to_path_buf(),
-          patch: manifest.release_patch(next, &versions)?,
-        });
-      }
+    for (manifest, next) in manifests {
+      actions.push(Action::FileWrite {
+        path: manifest.path().to_path_buf(),
+        patch: manifest.release_patch(next, versions)?,
+      });
     }
-    actions.extend(self.root_cargo_action(&actions, &versions)?);
+    actions.extend(self.root_cargo_action(&actions, versions)?);
     Ok(actions)
   }
 

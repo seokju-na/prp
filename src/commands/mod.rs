@@ -2,6 +2,7 @@ pub mod change;
 pub mod init;
 pub mod prepare;
 pub mod release;
+pub mod snapshot;
 pub mod status;
 
 use std::process::ExitCode;

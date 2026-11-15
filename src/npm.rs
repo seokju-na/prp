@@ -149,13 +149,23 @@ pub fn dependency_edits(pkg_json: &Value, versions: &ReleasedVersions) -> Vec<Ed
       if let Some(next) = versions.get(&(ManifestKind::PackageJson, name.clone()))
         && let Some(requirement) = current
           .as_str()
-          .and_then(|current| dependency::next_requirement(current, next))
+          .and_then(|current| next_npm_requirement(current, next))
       {
         edits.push((vec![table.to_string(), name.clone()], requirement));
       }
     }
   }
   edits
+}
+
+/// A prerelease ranks below its stable release, so a range would resolve past it;
+/// pin it exactly, as `workspace:*` which the package manager stamps on publish.
+fn next_npm_requirement(current: &str, next: &Version) -> Option<String> {
+  match (current, next.pre.is_empty()) {
+    ("workspace:^" | "workspace:~", false) => Some("workspace:*".to_string()),
+    (_, true) => dependency::next_requirement(current, next),
+    (_, false) => dependency::next_requirement(current, next).map(|_| next.to_string()),
+  }
 }
 
 /// The `workspaces` of `package.json` in `root`, `!` marking an exclusion.

@@ -14,6 +14,7 @@ pub struct ResolvedConfig {
   pub packages: ResolvedPackagesConfig,
   pub http: HttpConfig,
   pub registry: RegistryConfig,
+  pub snapshot: ResolvedSnapshotConfig,
 }
 
 impl ResolvedConfig {
@@ -35,6 +36,7 @@ impl ResolvedConfig {
       packages: ResolvedPackagesConfig::from(config.packages),
       http: config.http,
       registry: config.registry,
+      snapshot: ResolvedSnapshotConfig::from(config.snapshot),
     };
     Ok(resolved)
   }
@@ -175,6 +177,25 @@ impl From<PackageConfig> for ResolvedPackageConfig {
   }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedSnapshotConfig {
+  pub prerelease_format: String,
+  pub npm_dist_tag: Option<String>,
+}
+
+impl From<Option<SnapshotConfig>> for ResolvedSnapshotConfig {
+  fn from(value: Option<SnapshotConfig>) -> Self {
+    let val = value.unwrap_or_default();
+    let prerelease_format = val
+      .prerelease_format
+      .unwrap_or("snapshot-<sha>-<yyyymmdd>".to_string());
+    Self {
+      prerelease_format,
+      npm_dist_tag: val.npm_dist_tag,
+    }
+  }
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -187,6 +208,7 @@ pub struct Config {
   pub http: HttpConfig,
   #[serde(default, skip_serializing_if = "is_default")]
   pub registry: RegistryConfig,
+  pub snapshot: Option<SnapshotConfig>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -286,6 +308,13 @@ pub struct CargoRegistryConfig {
 pub struct JsrRegistryConfig {
   pub api_url: Option<String>,
   pub publish_command: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotConfig {
+  pub prerelease_format: Option<String>,
+  pub npm_dist_tag: Option<String>,
 }
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {

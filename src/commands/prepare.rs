@@ -230,7 +230,7 @@ impl Publishing<'_> {
 
   fn actions(&self, plan: &Plan, registries: &Registries) -> Result<Vec<Action>> {
     let workspace = self.workspace;
-    let mut files = workspace.version_actions(plan)?;
+    let mut files = workspace.plan_actions(plan)?;
     files.extend(workspace.changelog_actions(plan, registries)?);
     files.extend(workspace.consume_changes(plan));
     files.push(workspace.record_action(plan, self.base)?);
